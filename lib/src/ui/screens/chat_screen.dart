@@ -189,14 +189,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           icon: const Icon(Icons.arrow_back, color: Color(0xFFC7B8EA)),
           onPressed: () => setState(() => _inChat = false),
         ),
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.bolt, color: Color(0xFFC7B8EA), size: 24),
-            const SizedBox(width: 8),
-            const Text("Hermes"),
-          ],
-        ),
+        title: _ModelSelector(cs),
       ),
       body: messages.isEmpty
           ? Center(
@@ -260,6 +253,61 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _ModelSelector(ColorScheme cs) {
+    return Consumer(
+      builder: (context, ref, _) {
+        final modelsAsync = ref.watch(modelsProvider);
+        final selected = ref.watch(selectedModelProvider);
+        return modelsAsync.when(
+          data: (models) {
+            final active = models.where((m) => m.enabled).toList();
+            return GestureDetector(
+              onTap: () => _showModelSheet(context, ref, active, selected),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.bolt, color: Color(0xFFC7B8EA), size: 24),
+                  const SizedBox(width: 8),
+                  Flexible(child: Text(selected, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: cs.onSurface))),
+                  const SizedBox(width: 4),
+                  Icon(Icons.expand_more, size: 18, color: cs.onSurfaceVariant),
+                ],
+              ),
+            );
+          },
+          loading: () => const Text('...'),
+          error: (_, __) => const Text('hermes-agent'),
+        );
+      },
+    );
+  }
+
+  void _showModelSheet(BuildContext ctx, WidgetRef ref, List<ModelConfig> models, String current) {
+    showModalBottomSheet(
+      context: ctx,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Padding(padding: EdgeInsets.all(16), child: Text('Select Model', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+            ...models.map((m) => ListTile(
+              leading: Icon(Icons.bolt, color: m.name == current ? const Color(0xFFC7B8EA) : const Color(0xFF948F99)),
+              title: Text(m.name),
+              subtitle: Text(m.provider, style: const TextStyle(fontSize: 12)),
+              selected: m.name == current,
+              trailing: m.name == current ? const Icon(Icons.check, color: Color(0xFFC7B8EA)) : null,
+              onTap: () {
+                ref.read(selectedModelProvider.notifier).state = m.name;
+                Navigator.pop(ctx);
+              },
+            )),
+          ],
         ),
       ),
     );

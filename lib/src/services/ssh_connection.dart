@@ -130,12 +130,12 @@ class SshTunnelConnection extends HermesConnection {
   }
 
   @override
-  Stream<String> streamChat(String message) async* {
+  Stream<String> streamChat(String message, {String? model}) async* {
     await _startLocalForward();
     final response = await _dio.post(
       'http://127.0.0.1:8642/v1/chat/completions',
       data: {
-        'model': 'hermes',
+        'model': model ?? 'hermes',
         'messages': [
           {'role': 'user', 'content': message}
         ],

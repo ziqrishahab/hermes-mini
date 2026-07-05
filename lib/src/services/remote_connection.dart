@@ -104,11 +104,11 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Stream<String> streamChat(String message) async* {
+  Stream<String> streamChat(String message, {String? model}) async* {
     final response = await _dio.post<ResponseBody>(
       "/v1/chat/completions",
       data: {
-        "model": "hermes-agent",
+        "model": model ?? "hermes-agent",
         "messages": [
           {"role": "user", "content": message},
         ],

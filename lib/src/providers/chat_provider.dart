@@ -7,6 +7,25 @@ final chatMessagesProvider =
     StateNotifierProvider<ChatNotifier, List<ChatMessage>>((ref) {
       return ChatNotifier(ref);
     });
+
+final modelsProvider = FutureProvider<List<ModelConfig>>((ref) async {
+  final conn = ref.watch(connectionProvider).valueOrNull;
+  if (conn == null) return [];
+  return conn.getModels();
+});
+
+final selectedModelProvider = StateProvider<String>((ref) {
+  final modelsAsync = ref.watch(modelsProvider);
+  return modelsAsync.when(
+    data: (models) {
+      final active = models.where((m) => m.enabled).toList();
+      return active.isNotEmpty ? active.first.name : 'hermes-agent';
+    },
+    loading: () => '...',
+    error: (_, __) => 'hermes-agent',
+  );
+});
+
 final sessionsProvider =
     FutureProvider.family<List<SessionSummary>, String?>((ref, query) async {
       final conn = ref.watch(connectionProvider).valueOrNull;
@@ -20,6 +39,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
   Future<void> sendMessage(String text) async {
     final conn = ref.read(connectionProvider).valueOrNull;
     if (conn == null) return;
+    final model = ref.read(selectedModelProvider);
     final userMsg = ChatMessage(
       id: const Uuid().v4(),
       role: MessageRole.user,
@@ -37,7 +57,7 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     );
     state = [...state, assistantMsg];
     try {
-      await for (final chunk in conn.streamChat(text)) {
+      await for (final chunk in conn.streamChat(text, model: model)) {
         state = [
           for (final m in state)
             if (m.id == assistantId)

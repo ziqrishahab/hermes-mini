@@ -3,12 +3,7 @@ import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:go_router/go_router.dart";
 import "../../services/hermes_connection.dart";
 import "../../providers/connection_provider.dart";
-
-final modelsProvider = FutureProvider<List<ModelConfig>>((ref) async {
-  final conn = ref.watch(connectionProvider).valueOrNull;
-  if (conn == null) return [];
-  return conn.getModels();
-});
+import "../../providers/chat_provider.dart";
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});

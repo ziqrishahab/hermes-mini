@@ -152,7 +152,7 @@ class ModelConfig {
 abstract class HermesConnection {
   Future<bool> testConnection();
   Future<String> health();
-  Stream<String> streamChat(String message);
+  Stream<String> streamChat(String message, {String? model});
   void dispose();
 
   Future<List<SkillInfo>> getSkills();
