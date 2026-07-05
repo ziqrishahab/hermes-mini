@@ -1,0 +1,3 @@
+- Connection services implement the `HermesConnection` abstract class, ensuring a consistent API for `testConnection`, `health`, and `streamChat` across Remote and SSH modes.
+- State providers in `lib/src/providers/` use `StateNotifierProvider` to manage complex async state (like active connections) and `StateProvider` for simple configuration data.
+- UI screens are organized under `lib/src/ui/screens/` while reusable visual components are placed in `lib/src/ui/widgets/`, promoting a clear separation between page-level logic and presentational elements.

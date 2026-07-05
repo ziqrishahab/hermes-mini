@@ -1,0 +1,5 @@
+- Entry point `lib/main.dart` wraps the app in a `ProviderScope` for Riverpod state management.
+- `lib/src/app.dart` configures `MaterialApp.router` using `go_router` defined in `lib/src/router.dart`, enforcing a connection-first flow (`/connect` before `/chat`).
+- Connection logic is abstracted via `HermesConnection` interface in `lib/src/services/hermes_connection.dart`, with concrete implementations `RemoteConnection` (HTTPS) and `SshTunnelConnection` (SSH local forward) selected by a factory.
+- State is managed by `ConnectionNotifier` and `ChatProvider` in `lib/src/providers/`, persisting configuration via `StorageService` using `flutter_secure_storage` and `sqflite`.
+- UI is split into `ConnectionScreen` and `ChatScreen`, utilizing custom widgets like `ChatBubble` and `MarkdownBody` for rendering streaming SSE responses.
