@@ -4,11 +4,14 @@ import 'ui/screens/connection_screen.dart';
 import 'ui/screens/chat_screen.dart';
 import 'ui/screens/main_screen.dart';
 import 'providers/connection_provider.dart';
+import 'config/dev_config.dart';
 
 class AppRouter {
   static final router = GoRouter(
-    initialLocation: '/connect',
+    initialLocation: devBypassConnection ? '/home' : '/connect',
     redirect: (context, state) {
+      if (devBypassConnection) return null;
+
       final container = ProviderScope.containerOf(context);
       final conn = container.read(connectionProvider);
       final isConnected = conn.valueOrNull != null;
