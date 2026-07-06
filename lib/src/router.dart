@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'ui/screens/connection_screen.dart';
 import 'ui/screens/chat_screen.dart';
 import 'ui/screens/main_screen.dart';
+import 'ui/screens/soul_editor_screen.dart';
+import 'ui/screens/capabilities_screen.dart';
 import 'providers/connection_provider.dart';
 import 'config/dev_config.dart';
 
@@ -24,6 +26,8 @@ class AppRouter {
       GoRoute(path: '/connect', builder: (c, s) => const ConnectionScreen()),
       GoRoute(path: '/chat', builder: (c, s) => const ChatScreen()),
       GoRoute(path: '/home', builder: (c, s) => const MainScreen()),
+      GoRoute(path: '/soul-editor', builder: (c, s) => const SoulEditorScreen()),
+      GoRoute(path: '/capabilities', builder: (c, s) => const CapabilitiesScreen()),
     ],
   );
 }

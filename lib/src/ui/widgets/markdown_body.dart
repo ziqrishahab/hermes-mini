@@ -14,6 +14,31 @@ class MarkdownBodyWidget extends StatelessWidget {
     return MarkdownBody(
       data: content,
       selectable: true,
+      styleSheet: MarkdownStyleSheet(
+        p: const TextStyle(
+          fontSize: 14,
+          height: 1.65,
+          color: Color(0xFFECECEC),
+        ),
+        code: const TextStyle(
+          backgroundColor: Color(0xFF1A1A1A),
+          fontFamily: 'monospace',
+          fontSize: 12,
+          color: Color(0xFFECECEC),
+        ),
+        codeblockDecoration: BoxDecoration(
+          color: const Color(0xFF1A1A1A),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        h1: const TextStyle(fontSize: 22, fontWeight: FontWeight.w600, color: Color(0xFFECECEC)),
+        h2: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600, color: Color(0xFFECECEC)),
+        h3: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600, color: Color(0xFFECECEC)),
+        a: const TextStyle(color: Color(0xFF006ACD)),
+        blockquoteDecoration: BoxDecoration(
+          border: const Border(left: BorderSide(color: Color(0xFF003F7A), width: 3)),
+          color: const Color(0xFF003F7A).withValues(alpha: 0.08),
+        ),
+      ),
       onTapLink: (text, href, title) {
         if (href != null) {
           final uri = Uri.tryParse(href);
@@ -38,15 +63,15 @@ class CodeElementBuilder extends MarkdownElementBuilder {
     return Container(
       margin: const EdgeInsets.symmetric(vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFF1E1E1E),
-        borderRadius: BorderRadius.circular(8),
+        color: const Color(0xFF1A1A1A),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: HighlightView(
         code,
         language: language.isEmpty ? 'plaintext' : language,
         theme: githubTheme,
         padding: const EdgeInsets.all(12),
-        textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+        textStyle: const TextStyle(fontFamily: 'monospace', fontSize: 12),
       ),
     );
   }

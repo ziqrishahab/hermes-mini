@@ -1,46 +1,68 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+// Hermes Design Tokens — extracted from hermes-desktop main.css
+class HermesTokens {
+  // Dark theme colors
+  static const bgPrimary = Color(0xFF212121);
+  static const bgSecondary = Color(0xFF171717);
+  static const bgTertiary = Color(0xFF2F2F2F);
+  static const bgElevated = Color(0xFF303030);
+  static const bgHover = Color(0xFF3A3A3A);
+  static const bgActive = Color(0xFF424242);
+  static const accent = Color(0xFF003F7A);
+  static const accentHover = Color(0xFF0055A4);
+  static const accentText = Color(0xFF006ACD);
+  static const textPrimary = Color(0xFFECECEC);
+  static const textSecondary = Color(0xFFB4B4B4);
+  static const textMuted = Color(0xFF8E8E8E);
+  static const border = Color(0x0FFFFFFF);
+  static const borderBright = Color(0x1AFFFFFF);
+  static const borderFocus = Color(0xFF003F7A);
+  static const success = Color(0xFF22C55E);
+  static const error = Color(0xFFEF4444);
+  static const warning = Color(0xFFF59E0B);
+  static const highlight = Color(0xFFF5C518);
+
+  // Chat bubbles
+  static const userBubble = Color(0xFF003F7A);
+  static const userBubbleText = Color(0xFFFFFFFF);
+  static const agentBubble = Color(0xFF2F2F2F);
+  static const agentBubbleText = Color(0xFFECECEC);
+  static const codeBg = Color(0xFF1A1A1A);
+
+  // Border radius
+  static const radiusSm = 6.0;
+  static const radiusMd = 10.0;
+  static const radiusLg = 14.0;
+
+  // Spacing
+  static const chatBubblePaddingH = 16.0;
+  static const chatBubblePaddingV = 10.0;
+  static const inputPaddingH = 14.0;
+  static const inputPaddingV = 10.0;
+  static const messageGap = 12.0;
+
+  // Typography
+  static const fontSizeBody = 14.0;
+  static const fontSizeCode = 12.0;
+  static const fontSizeTime = 11.0;
+  static const lineHeightChat = 1.65;
+}
+
 class AppTheme {
-  static const _lavender = Color(0xFFC7B8EA);
-  static const _surfaceLowest = Color(0xFF0E0E0E);
-  static const _surfaceCard = Color(0xFF242424);
-  static const _inputBorder = Color(0xFF333333);
   static const _navInactive = Color(0xFF666666);
 
   static final _colorScheme = ColorScheme(
     brightness: Brightness.dark,
-    primary: const Color(0xFFE2D5FF),
-    onPrimary: const Color(0xFF352A52),
-    primaryContainer: _lavender,
-    onPrimaryContainer: const Color(0xFF534772),
-    secondary: const Color(0xFFC8C6C5),
-    onSecondary: const Color(0xFF313030),
-    secondaryContainer: const Color(0xFF474746),
-    onSecondaryContainer: const Color(0xFFB7B5B4),
-    tertiary: const Color(0xFFEADD95),
-    onTertiary: const Color(0xFF373100),
-    tertiaryContainer: const Color(0xFFCDC17C),
-    onTertiaryContainer: const Color(0xFF574F15),
-    error: const Color(0xFFFFB4AB),
-    onError: const Color(0xFF690005),
-    errorContainer: const Color(0xFF93000A),
-    onErrorContainer: const Color(0xFFFFDAD6),
-    surface: const Color(0xFF131313),
-    onSurface: const Color(0xFFE5E2E1),
-    surfaceDim: const Color(0xFF131313),
-    surfaceBright: const Color(0xFF393939),
-    surfaceContainerLowest: _surfaceLowest,
-    surfaceContainerLow: const Color(0xFF1C1B1B),
-    surfaceContainer: const Color(0xFF201F1F),
-    surfaceContainerHigh: const Color(0xFF2A2A2A),
-    surfaceContainerHighest: const Color(0xFF353534),
-    outline: const Color(0xFF948F99),
-    outlineVariant: const Color(0xFF49454E),
-    inverseSurface: const Color(0xFFE5E2E1),
-    onInverseSurface: const Color(0xFF313030),
-    inversePrimary: const Color(0xFF645883),
-    surfaceTint: const Color(0xFFCEBFF1),
+    primary: HermesTokens.accent,
+    onPrimary: Colors.white,
+    secondary: HermesTokens.textSecondary,
+    onSecondary: HermesTokens.bgTertiary,
+    surface: HermesTokens.bgPrimary,
+    onSurface: HermesTokens.textPrimary,
+    error: HermesTokens.error,
+    onError: Colors.white,
   );
 
   static ThemeData get darkTheme {
@@ -48,72 +70,71 @@ class AppTheme {
       useMaterial3: true,
       brightness: Brightness.dark,
       colorScheme: _colorScheme,
-      scaffoldBackgroundColor: _surfaceLowest,
+      scaffoldBackgroundColor: HermesTokens.bgPrimary,
       appBarTheme: const AppBarTheme(
         centerTitle: false,
         elevation: 0,
         scrolledUnderElevation: 0,
-        backgroundColor: Color(0xFF131313),
+        backgroundColor: Color(0xFF212121),
       ),
       textTheme: _buildTextTheme(),
       cardTheme: CardThemeData(
         elevation: 0,
-        color: _surfaceCard,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        color: HermesTokens.bgSecondary,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: _surfaceCard,
+        fillColor: HermesTokens.bgPrimary,
         contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 14,
+          horizontal: 14,
+          vertical: 10,
         ),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _inputBorder),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: Color(0x1AFFFFFF)),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _inputBorder),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: Color(0x1AFFFFFF)),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _lavender),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: HermesTokens.accent),
         ),
         errorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _colorScheme.error),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: HermesTokens.error),
         ),
         focusedErrorBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _colorScheme.error),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: HermesTokens.error),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: _lavender,
-          foregroundColor: const Color(0xFF121212),
-          padding: const EdgeInsets.symmetric(vertical: 16),
+          backgroundColor: HermesTokens.accent,
+          foregroundColor: Colors.white,
+          padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 24),
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
           ),
         ),
       ),
       navigationBarTheme: NavigationBarThemeData(
         height: 64,
-        backgroundColor: const Color(0xFF131313),
+        backgroundColor: HermesTokens.bgSecondary,
         surfaceTintColor: Colors.transparent,
-        indicatorColor: _lavender.withValues(alpha: 0.15),
+        indicatorColor: HermesTokens.accent.withValues(alpha: 0.15),
         iconTheme: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
-            return const IconThemeData(color: _lavender, size: 24);
+            return const IconThemeData(color: HermesTokens.accent, size: 24);
           }
           return const IconThemeData(color: _navInactive, size: 24);
         }),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
-          if (states.contains(WidgetState.selected)) {
-            return const TextStyle(fontSize: 0, height: 0);
-          }
           return const TextStyle(fontSize: 0, height: 0);
         }),
       ),
@@ -125,10 +146,10 @@ class AppTheme {
       useMaterial3: true,
       brightness: Brightness.light,
       colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF645883),
+        seedColor: HermesTokens.accent,
         brightness: Brightness.light,
       ),
-      scaffoldBackgroundColor: const Color(0xFFF8F7FC),
+      scaffoldBackgroundColor: const Color(0xFFFFFFFF),
       appBarTheme: const AppBarTheme(
         centerTitle: false,
         elevation: 0,
@@ -137,24 +158,26 @@ class AppTheme {
       textTheme: _buildTextTheme(),
       cardTheme: CardThemeData(
         elevation: 0,
-        color: Colors.white,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        color: const Color(0xFFF8F8F8),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFFE0E0E0)),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: Color(0xFFE5E5E5)),
         ),
         enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFFE0E0E0)),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: Color(0xFFE5E5E5)),
         ),
         focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: Color(0xFF645883)),
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          borderSide: const BorderSide(color: HermesTokens.accent),
         ),
       ),
     );
@@ -220,9 +243,9 @@ class AppTheme {
         letterSpacing: 0.5,
       ),
       labelSmall: GoogleFonts.inter(
-        fontSize: 12,
+        fontSize: 11,
         fontWeight: FontWeight.w500,
-        height: 16 / 12,
+        height: 16 / 11,
         letterSpacing: 0.6,
       ),
     );
