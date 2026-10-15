@@ -7,6 +7,8 @@ class ChatMessage {
   final DateTime timestamp;
   final String? toolName;
   final String? toolStatus;
+  final String? toolInput;
+  final String? toolOutput;
   final bool isStreaming;
 
   const ChatMessage({
@@ -16,6 +18,8 @@ class ChatMessage {
     required this.timestamp,
     this.toolName,
     this.toolStatus,
+    this.toolInput,
+    this.toolOutput,
     this.isStreaming = false,
   });
 
@@ -26,6 +30,8 @@ class ChatMessage {
     DateTime? timestamp,
     String? toolName,
     String? toolStatus,
+    String? toolInput,
+    String? toolOutput,
     bool? isStreaming,
   }) {
     return ChatMessage(
@@ -35,6 +41,8 @@ class ChatMessage {
       timestamp: timestamp ?? this.timestamp,
       toolName: toolName ?? this.toolName,
       toolStatus: toolStatus ?? this.toolStatus,
+      toolInput: toolInput ?? this.toolInput,
+      toolOutput: toolOutput ?? this.toolOutput,
       isStreaming: isStreaming ?? this.isStreaming,
     );
   }

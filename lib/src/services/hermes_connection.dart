@@ -53,9 +53,11 @@ class ToolsetInfo {
   });
 
   factory ToolsetInfo.fromJson(Map<String, dynamic> json) {
+    final k = json['key'] as String? ?? json['name'] as String? ?? '';
+    final l = json['label'] as String? ?? json['name'] as String? ?? k;
     return ToolsetInfo(
-      key: json['key'] as String? ?? '',
-      label: json['label'] as String? ?? '',
+      key: k,
+      label: l,
       description: json['description'] as String? ?? '',
       enabled: json['enabled'] as bool? ?? true,
     );
@@ -76,6 +78,8 @@ class SessionSummary {
   final String source;
   final int messageCount;
   final String model;
+  final String snippet;
+  final int unreadCount;
 
   const SessionSummary({
     required this.id,
@@ -84,16 +88,35 @@ class SessionSummary {
     required this.source,
     required this.messageCount,
     required this.model,
+    this.snippet = '',
+    this.unreadCount = 0,
   });
 
   factory SessionSummary.fromJson(Map<String, dynamic> json) {
+    String startedAtStr = '';
+    final rawStarted = json['startedAt'] ?? json['started_at'];
+    if (rawStarted is num) {
+      startedAtStr = DateTime.fromMillisecondsSinceEpoch((rawStarted * 1000).toInt()).toIso8601String();
+    } else if (rawStarted != null) {
+      startedAtStr = rawStarted.toString();
+    }
+
+    int unread = 0;
+    if (json['unreadCount'] is int) {
+      unread = json['unreadCount'] as int;
+    } else if (json['unread'] == true) {
+      unread = 1;
+    }
+
     return SessionSummary(
       id: json['id'] as String? ?? '',
-      title: json['title'] as String? ?? '',
-      startedAt: json['startedAt'] as String? ?? '',
+      title: json['title'] as String? ?? 'Untitled Session',
+      startedAt: startedAtStr,
       source: json['source'] as String? ?? '',
-      messageCount: json['messageCount'] as int? ?? 0,
+      messageCount: json['messageCount'] as int? ?? json['message_count'] as int? ?? 0,
       model: json['model'] as String? ?? '',
+      snippet: json['snippet'] as String? ?? json['preview'] as String? ?? '',
+      unreadCount: unread,
     );
   }
 
@@ -104,6 +127,8 @@ class SessionSummary {
         'source': source,
         'messageCount': messageCount,
         'model': model,
+        'snippet': snippet,
+        'unreadCount': unreadCount,
       };
 }
 
@@ -152,7 +177,11 @@ class ModelConfig {
 abstract class HermesConnection {
   Future<bool> testConnection();
   Future<String> health();
-  Stream<String> streamChat(String message, {String? model});
+  String? get activeSessionId => null;
+  set activeSessionId(String? id) {}
+
+  Stream<String> streamChat(String message, {String? model, String? sessionId});
+  Future<bool> stopGeneration({String? sessionId}) async => false;
   void dispose();
 
   Future<List<SkillInfo>> getSkills();
@@ -161,13 +190,30 @@ abstract class HermesConnection {
 
   Future<List<ToolsetInfo>> getToolsets();
   Future<void> setToolsetEnabled(String key, bool enabled);
+  Future<List<Map<String, dynamic>>> getMcpServers() async => [];
+  Future<List<Map<String, dynamic>>> getMcpCatalog() async => [];
+  Future<bool> installMcpCatalogEntry(String name, Map<String, String> env) async => false;
+  Future<bool> uninstallMcpServer(String name) async => false;
+  Future<bool> setMcpServerEnabled(String name, bool enabled) async => false;
+  Future<List<Map<String, dynamic>>> getPlugins() async => [];
+  Future<Map<String, dynamic>?> getPluginApi(String pluginName, String path) async => null;
+  Future<String> executeSlashCommand(String command, {String? sessionId}) async => '';
 
   Future<List<ModelConfig>> getModels();
   Future<void> setModelEnabled(String name, bool enabled);
   Future<void> setModelProviderKey(String modelName, String provider, String key);
 
+  Future<String> getReasoningEffort() async => 'low';
+  Future<bool> setReasoningEffort(String effort) async => false;
+  Future<String?> getActiveWorkspaceCwd() async => null;
+  Future<bool> setActiveWorkspaceCwd(String path) async => false;
+  Future<List<Map<String, dynamic>>> getProjectsList() async => [];
+  Future<List<Map<String, dynamic>>> listWorkspaceFiles({String? subpath}) async => [];
+  Future<String?> readWorkspaceFile(String path) async => null;
+
   Future<List<SessionSummary>> getSessions({String? query});
   Future<void> deleteSession(String id);
+  Future<void> renameSession(String id, String newTitle) async {}
   Future<List<Map<String, dynamic>>> getSessionMessages(String sessionId);
 
   Future<List<Map<String, dynamic>>> getSchedules();
@@ -180,11 +226,29 @@ abstract class HermesConnection {
 
   Future<Map<String, bool>> getPlatformEnabled();
   Future<void> setPlatformEnabled(String platform, bool enabled);
+  Future<List<Map<String, dynamic>>> getMessagingPlatforms() async => [];
+  Future<bool> setMessagingPlatformEnabled(String platformId, bool enabled) async => false;
+  Future<bool> updateMessagingPlatform(
+    String platformId, {
+    bool? enabled,
+    Map<String, String>? env,
+    List<String>? clearEnv,
+  }) async => false;
+
+  Future<Map<String, dynamic>?> getKanbanBoard({String? boardSlug}) async => null;
+  Future<bool> createKanbanTask({required String title, String? body, int priority = 0, String? status}) async => false;
+  Future<bool> updateKanbanTask(String taskId, {String? status, String? title, String? body}) async => false;
+  Future<bool> deleteKanbanTask(String taskId) async => false;
+
+  Future<bool> approveAction({String? requestId}) async => false;
+  Future<bool> denyAction({String? requestId}) async => false;
 
   Future<String> readMemory();
   Future<String> readUserProfile();
+  Future<String> readSoul();
   Future<void> writeMemory(String content);
   Future<void> writeUserProfile(String content);
+  Future<void> writeSoul(String content);
 
   Future<Map<String, String>> readEnv();
   Future<void> setEnvValue(String key, String value);

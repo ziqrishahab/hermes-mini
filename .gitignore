@@ -11,6 +11,7 @@
 .svn/
 .swiftpm/
 migrate_working_dir/
+.sample/
 
 # IntelliJ related
 *.iml
@@ -46,3 +47,5 @@ app.*.map.json
 
 # Dev config (contains credentials)
 lib/src/config/dev_config.dart
+# Widget Preview related
+.widget_preview/

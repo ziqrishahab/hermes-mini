@@ -8,11 +8,11 @@ class HermesMobileApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
-      title: 'Hermes Mobile',
+      title: 'MyPixie',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       darkTheme: AppTheme.darkTheme,
-      themeMode: ThemeMode.dark,
+      themeMode: ThemeMode.light,
       routerConfig: AppRouter.router,
     );
   }

@@ -1,12 +1,73 @@
 import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
+import "package:go_router/go_router.dart";
 import "../../providers/connection_provider.dart";
+import "../../theme.dart";
 
 final schedulesProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
   final conn = ref.watch(connectionProvider).valueOrNull;
   if (conn == null) return [];
   return conn.getSchedules();
 });
+
+// Cron expression validator
+class CronValidator {
+  static final _cronRegex = RegExp(
+    r'^(\*|([0-9]|[1-5][0-9])|\*\/([0-9]|[1-5][0-9]))\s+'
+    r'(\*|([0-9]|1[0-9]|2[0-3])|\*\/([0-9]|1[0-9]|2[0-3]))\s+'
+    r'(\*|([1-9]|[12][0-9]|3[01])|\*\/([1-9]|[12][0-9]|3[01]))\s+'
+    r'(\*|([1-9]|1[0-2])|\*\/([1-9]|1[0-2]))\s+'
+    r'(\*|[0-6]|\*\/[0-6])$',
+  );
+
+  static String? validate(String? value) {
+    if (value == null || value.isEmpty) {
+      return 'Cron expression is required';
+    }
+    final parts = value.trim().split(RegExp(r'\s+'));
+    if (parts.length != 5) {
+      return 'Cron must have 5 parts: minute hour day month weekday';
+    }
+    if (!_cronRegex.hasMatch(value.trim())) {
+      return 'Invalid cron format';
+    }
+    return null;
+  }
+
+  static String toHumanReadable(String cron) {
+    final parts = cron.split(' ');
+    if (parts.length < 5) return cron;
+
+    final minute = parts[0];
+    final hour = parts[1];
+    final day = parts[2];
+    final month = parts[3];
+    final weekday = parts[4];
+
+    if (minute == "0" && hour == "9" && day == "*" && month == "*" && weekday == "*") {
+      return "Daily at 9:00 AM";
+    }
+    if (minute == "0" && hour == "0" && day == "*" && month == "*" && weekday == "*") {
+      return "Daily at midnight";
+    }
+    if (minute == "0" && hour == "12" && day == "*" && month == "*" && weekday == "*") {
+      return "Daily at noon";
+    }
+    if (parts.every((p) => p == "*")) {
+      return "Every minute";
+    }
+    if (minute.startsWith("*/") && hour == "*" && day == "*" && month == "*" && weekday == "*") {
+      final interval = minute.substring(2);
+      return "Every $interval minutes";
+    }
+    if (hour.startsWith("*/") && minute == "0" && day == "*" && month == "*" && weekday == "*") {
+      final interval = hour.substring(2);
+      return "Every $interval hours";
+    }
+
+    return cron;
+  }
+}
 
 class SchedulesScreen extends ConsumerStatefulWidget {
   const SchedulesScreen({super.key});
@@ -15,70 +76,188 @@ class SchedulesScreen extends ConsumerStatefulWidget {
 }
 
 class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
+  final _searchCtrl = TextEditingController();
+  String _search = "";
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
     final schedulesAsync = ref.watch(schedulesProvider);
 
     return Scaffold(
-      backgroundColor: const Color(0xFF212121),
+      backgroundColor: HermesTokens.bgPrimary,
+      appBar: AppBar(
+        backgroundColor: HermesTokens.bgPrimary,
+        elevation: 0,
+        centerTitle: true,
+        title: const Text(
+          "Cron Scheduler",
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w700,
+            color: HermesTokens.textPrimary,
+          ),
+        ),
+      ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text("Cron Scheduler",
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: Color(0xFFECECEC))),
-              const SizedBox(height: 4),
-              const Text("Create and manage cron jobs with delivery targets.",
-                  style: TextStyle(fontSize: 13, color: Color(0xFFB4B4B4))),
-              const SizedBox(height: 20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Search input
+                  Container(
+                    decoration: NeumorphicDecoration.recessed(radius: 14),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: TextField(
+                      controller: _searchCtrl,
+                      style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
+                      decoration: const InputDecoration(
+                        hintText: "Search schedules...",
+                        hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                        prefixIcon: Icon(Icons.search, color: HermesTokens.textMuted, size: 18),
+                        filled: false,
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        contentPadding: EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      onChanged: (v) => setState(() => _search = v.trim().toLowerCase()),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
 
-              // New Schedule button
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton.icon(
-                  onPressed: () => _showCreateSheet(context),
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text("New Schedule"),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: const Color(0xFF003F7A),
-                    side: const BorderSide(color: Color(0xFF003F7A)),
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  // Section count header
+                  schedulesAsync.when(
+                    data: (schedules) => Padding(
+                      padding: const EdgeInsets.only(bottom: 2, left: 2),
+                      child: Text(
+                        "SCHEDULES (${schedules.length})",
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: HermesTokens.textMuted,
+                          letterSpacing: 0.5,
+                        ),
+                      ),
+                    ),
+                    loading: () => const SizedBox.shrink(),
+                    error: (_, _) => const SizedBox.shrink(),
+                  ),
+                ],
+              ),
+            ),
+
+            // Schedules list or centered empty state
+            Expanded(
+              child: RefreshIndicator(
+                color: HermesTokens.accent,
+                backgroundColor: HermesTokens.bgElevated,
+                onRefresh: () async {
+                  ref.invalidate(schedulesProvider);
+                  try {
+                    await ref.read(schedulesProvider.future);
+                  } catch (_) {}
+                },
+                child: schedulesAsync.when(
+                  data: (schedules) {
+                    final filtered = _search.isEmpty
+                        ? schedules
+                        : schedules.where((s) {
+                            final name = (s["name"] as String? ?? "").toLowerCase();
+                            final cron = (s["cron"] as String? ?? "").toLowerCase();
+                            return name.contains(_search) || cron.contains(_search);
+                          }).toList();
+
+                    if (filtered.isEmpty) {
+                      return ListView(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        children: [
+                          SizedBox(height: MediaQuery.of(context).size.height * 0.2),
+                          Center(
+                            child: Padding(
+                              padding: const EdgeInsets.all(32),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: NeumorphicDecoration.raised(radius: 16),
+                                    child: const Icon(Icons.schedule, size: 26, color: HermesTokens.accent),
+                                  ),
+                                  const SizedBox(height: 16),
+                                  const Text(
+                                    "No schedules found",
+                                    style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  const Text(
+                                    "Pull down to refresh or create a cron schedule.",
+                                    style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ],
+                      );
+                    }
+
+                    return ListView.builder(
+                      physics: const AlwaysScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 80),
+                      itemCount: filtered.length,
+                      itemBuilder: (context, index) => _scheduleCard(filtered[index]),
+                    );
+                  },
+                  loading: () => const Center(
+                    child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
+                  ),
+                  error: (e, _) => Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.error_outline, size: 40, color: HermesTokens.error),
+                          const SizedBox(height: 12),
+                          const Text("Failed to load schedules", style: TextStyle(fontSize: 14, color: HermesTokens.error)),
+                          const SizedBox(height: 8),
+                          TextButton(
+                            onPressed: () => ref.invalidate(schedulesProvider),
+                            child: const Text("Retry", style: TextStyle(color: HermesTokens.accentText)),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ),
-              const SizedBox(height: 24),
-
-              // Schedule list
-              schedulesAsync.when(
-                data: (schedules) => schedules.isEmpty
-                    ? const Center(
-                        child: Padding(
-                          padding: EdgeInsets.all(40),
-                          child: Column(
-                            children: [
-                              Icon(Icons.schedule, size: 48, color: Color(0xFF8E8E8E)),
-                              SizedBox(height: 16),
-                              Text("No schedules yet.",
-                                  style: TextStyle(fontSize: 14, color: Color(0xFF8E8E8E))),
-                            ],
-                          ),
-                        ),
-                      )
-                    : Column(
-                        children: schedules.map((s) => _scheduleCard(s)).toList(),
-                      ),
-                loading: () => const Center(
-                  child: CircularProgressIndicator(color: Color(0xFF003F7A)),
-                ),
-                error: (e, _) => Center(
-                  child: Text("Failed: $e", style: const TextStyle(color: Color(0xFFEF4444))),
-                ),
-              ),
-            ],
-          ),
+            ),
+          ],
+        ),
+      ),
+      floatingActionButton: Container(
+        width: 56,
+        height: 56,
+        decoration: NeumorphicDecoration.raised(
+          radius: 28,
+          color: HermesTokens.accent,
+          distance: 3.5,
+          blur: 7,
+        ),
+        child: IconButton(
+          onPressed: () => context.push('/schedule/new'),
+          icon: const Icon(Icons.add, size: 24, color: Colors.white),
         ),
       ),
     );
@@ -91,186 +270,245 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
     final target = s["target"] as String? ?? "";
     final enabled = s["enabled"] as bool? ?? false;
 
-    // Parse cron for human-readable
-    final cronParts = cron.split(" ");
-    String nextRun = "";
-    if (cronParts.length >= 5) {
-      if (cronParts[0] == "0" && cronParts[1] == "9" && cronParts[2] == "*" && cronParts[3] == "*" && cronParts[4] == "*") {
-        nextRun = "Daily at 9:00 AM";
-      } else if (cronParts.every((p) => p == "*")) {
-        nextRun = "Every minute";
-      } else {
-        nextRun = cron;
-      }
-    } else {
-      nextRun = cron;
-    }
+    final nextRun = CronValidator.toHumanReadable(cron);
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF171717),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  color: enabled
-                      ? const Color(0xFF003F7A).withValues(alpha: 0.15)
-                      : const Color(0xFF2F2F2F),
-                  borderRadius: BorderRadius.circular(10),
+    return GestureDetector(
+      onTap: () => _openScheduleDetail(id),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(14),
+        decoration: NeumorphicDecoration.raised(
+          radius: 16,
+          distance: 3.5,
+          blur: 7,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: HermesTokens.bgTertiary,
+                    borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                    border: Border.all(color: HermesTokens.borderBright),
+                  ),
+                  alignment: Alignment.center,
+                  child: Icon(
+                    enabled ? Icons.timer_outlined : Icons.timer_off_outlined,
+                    color: enabled ? HermesTokens.textPrimary : HermesTokens.textMuted,
+                    size: 18,
+                  ),
                 ),
-                alignment: Alignment.center,
-                child: Icon(
-                  enabled ? Icons.timer : Icons.timer_off,
-                  color: enabled ? const Color(0xFF003F7A) : const Color(0xFF8E8E8E),
-                  size: 20,
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: HermesTokens.textPrimary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                            decoration: BoxDecoration(
+                              color: HermesTokens.codeBg,
+                              borderRadius: BorderRadius.circular(3),
+                              border: Border.all(color: HermesTokens.border),
+                            ),
+                            child: Text(
+                              cron,
+                              style: const TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 10,
+                                color: HermesTokens.textSecondary,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              nextRun,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                // Actions
+                Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(name,
-                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: Color(0xFFECECEC))),
-                    const SizedBox(height: 2),
-                    Text(nextRun,
-                        style: const TextStyle(fontSize: 12, color: Color(0xFF8E8E8E))),
+                    _actionButton(Icons.play_arrow, HermesTokens.success, () => _runNow(id)),
+                    const SizedBox(width: 4),
+                    _actionButton(Icons.edit_outlined, HermesTokens.textSecondary, () => _editSchedule(id)),
+                    const SizedBox(width: 4),
+                    _actionButton(Icons.delete_outline, HermesTokens.error, () => _deleteSchedule(id)),
                   ],
                 ),
-              ),
-              Switch(
-                value: enabled,
-                activeColor: const Color(0xFF003F7A),
-                onChanged: (v) {
-                  final conn = ref.read(connectionProvider).valueOrNull;
-                  conn?.updateSchedule(id, {"enabled": v});
-                  ref.invalidate(schedulesProvider);
-                },
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              const Icon(Icons.send, size: 13, color: Color(0xFF8E8E8E)),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  "→ $target",
-                  style: const TextStyle(fontSize: 11, color: Color(0xFF8E8E8E)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                if (target.isNotEmpty)
+                  Expanded(
+                    child: Text(
+                      "Target: $target",
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                    ),
+                  )
+                else
+                  const Spacer(),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: enabled
+                        ? HermesTokens.success.withValues(alpha: 0.12)
+                        : HermesTokens.bgTertiary,
+                    borderRadius: BorderRadius.circular(HermesTokens.radiusSm - 2),
+                    border: Border.all(
+                      color: enabled
+                          ? HermesTokens.success.withValues(alpha: 0.3)
+                          : HermesTokens.border,
+                    ),
+                  ),
+                  child: Text(
+                    enabled ? "Enabled" : "Disabled",
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: enabled ? HermesTokens.success : HermesTokens.textMuted,
+                    ),
+                  ),
                 ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _actionButton(IconData icon, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 28,
+        height: 28,
+        decoration: BoxDecoration(
+          color: HermesTokens.bgTertiary,
+          borderRadius: BorderRadius.circular(HermesTokens.radiusSm - 2),
+          border: Border.all(color: HermesTokens.borderBright),
+        ),
+        child: Icon(icon, size: 15, color: color),
+      ),
+    );
+  }
+
+  void _openScheduleDetail(String id) {
+    context.push('/schedule/$id');
+  }
+
+  Future<void> _runNow(String id) async {
+    try {
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Schedule triggered successfully"),
+            backgroundColor: HermesTokens.success,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Trigger failed: $e"),
+            backgroundColor: HermesTokens.error,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    }
+  }
+
+  void _editSchedule(String id) {
+    context.push('/schedule/$id/edit');
+  }
+
+  Future<void> _deleteSchedule(String id) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: HermesTokens.bgElevated,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+          side: const BorderSide(color: HermesTokens.borderBright),
+        ),
+        title: const Text(
+          "Delete Schedule?",
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
+        ),
+        content: const Text(
+          "This schedule will be permanently deleted. This action cannot be undone.",
+          style: TextStyle(fontSize: 13, color: HermesTokens.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: HermesTokens.error,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
               ),
-              GestureDetector(
-                onTap: () {
-                  final conn = ref.read(connectionProvider).valueOrNull;
-                  conn?.deleteSchedule(id);
-                  ref.invalidate(schedulesProvider);
-                },
-                child: const Icon(Icons.delete_outline, size: 18, color: Color(0xFFEF4444)),
-              ),
-            ],
+            ),
+            child: const Text("Delete"),
           ),
         ],
       ),
     );
-  }
 
-  void _showCreateSheet(BuildContext ctx) {
-    final nameCtrl = TextEditingController();
-    final cronCtrl = TextEditingController();
-    final targetCtrl = TextEditingController();
-
-    showModalBottomSheet(
-      context: ctx,
-      isScrollControlled: true,
-      backgroundColor: const Color(0xFF171717),
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(14))),
-      builder: (_) => SafeArea(
-        child: Padding(
-          padding: EdgeInsets.only(bottom: MediaQuery.of(ctx).viewInsets.bottom),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Padding(
-                padding: EdgeInsets.all(16),
-                child: Text("New Schedule",
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFFECECEC))),
-              ),
-              const Divider(color: Color(0xFF2A2A2A), height: 1),
-              const SizedBox(height: 16),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  children: [
-                    _sheetField(nameCtrl, "Schedule Name", Icons.label_outline),
-                    const SizedBox(height: 12),
-                    _sheetField(cronCtrl, "Cron Expression (e.g. 0 9 * * *)", Icons.schedule),
-                    const SizedBox(height: 12),
-                    _sheetField(targetCtrl, "Delivery Target (e.g. telegram)", Icons.send),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 20),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                child: SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: () {
-                      final conn = ref.read(connectionProvider).valueOrNull;
-                      conn?.createSchedule({
-                        "name": nameCtrl.text,
-                        "cron": cronCtrl.text,
-                        "target": targetCtrl.text,
-                        "enabled": true,
-                      });
-                      ref.invalidate(schedulesProvider);
-                      Navigator.pop(ctx);
-                    },
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                    ),
-                    child: const Text("Create Schedule"),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _sheetField(TextEditingController ctrl, String hint, IconData icon) {
-    return TextField(
-      controller: ctrl,
-      style: const TextStyle(color: Color(0xFFECECEC), fontSize: 14),
-      decoration: InputDecoration(
-        hintText: hint,
-        hintStyle: const TextStyle(color: Color(0xFF8E8E8E)),
-        prefixIcon: Icon(icon, color: const Color(0xFF8E8E8E), size: 20),
-        filled: true,
-        fillColor: const Color(0xFF212121),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: Color(0x1AFFFFFF)),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: const BorderSide(color: Color(0xFF003F7A)),
-        ),
-      ),
-    );
+    if (confirm == true) {
+      try {
+        final conn = ref.read(connectionProvider).valueOrNull;
+        if (conn != null) {
+          await conn.deleteSchedule(id);
+          ref.invalidate(schedulesProvider);
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text("Failed to delete schedule: $e"),
+              backgroundColor: HermesTokens.error,
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+        }
+      }
+    }
   }
 }

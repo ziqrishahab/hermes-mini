@@ -1,1 +1,0 @@
-A cross-platform Flutter application enabling secure chat interactions with Hermes Agent via direct HTTPS or SSH-tunneled connections.

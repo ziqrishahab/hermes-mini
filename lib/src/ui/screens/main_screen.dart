@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../providers/connection_provider.dart';
-import '../../config/dev_config.dart';
+import '../../theme.dart';
 import 'chat_screen.dart';
 import 'schedules_screen.dart';
 import 'settings_screen.dart';
@@ -13,126 +13,123 @@ class MainScreen extends ConsumerStatefulWidget {
 }
 
 class _MainScreenState extends ConsumerState<MainScreen> {
-  int _tab = 0;
+  int _tab = 0; // Default to Chat tab
 
   static const _tabs = [
-    ('Chat', Icons.chat_bubble),
-    ('Schedules', Icons.schedule),
-    ('Settings', Icons.settings),
+    ('Chat', Icons.chat_bubble_outline, Icons.chat_bubble),
+    ('Schedules', Icons.schedule_outlined, Icons.schedule),
+    ('Settings', Icons.settings_outlined, Icons.settings),
   ];
 
-  final _screens = const [
-    ChatScreen(),
-    SchedulesScreen(),
-    SettingsScreen(),
-  ];
-
-  void _switchTab(int i) {
-    if (i == _tab) return;
-    setState(() => _tab = i);
-  }
 
   @override
   Widget build(BuildContext context) {
-    if (devBypassConnection) return _mainBody();
-
-    final connState = ref.watch(connectionProvider);
-
-    if (connState.isLoading) {
-      return _splash('Connecting...');
-    }
-
-    if (connState.valueOrNull == null) {
-      if (connState.hasError) {
-        return _splash('Connection failed', onRetry: () {
-          final config = ref.read(connectionConfigProvider);
-          if (config != null) {
-            ref.read(connectionProvider.notifier).testAndConnect(config);
-          }
-        });
-      }
-      return _splash('Connecting...');
-    }
-
     return _mainBody();
   }
 
   Widget _mainBody() {
     return Scaffold(
-      body: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 200),
-        switchInCurve: Curves.easeOut,
-        switchOutCurve: Curves.easeIn,
-        transitionBuilder: (child, animation) =>
-            FadeTransition(opacity: animation, child: child),
-        child: KeyedSubtree(key: ValueKey(_tab), child: _screens[_tab]),
+      backgroundColor: HermesTokens.bgPrimary,
+      body: IndexedStack(
+        index: _tab,
+        children: const [
+          ChatScreen(),
+          SchedulesScreen(),
+          SettingsScreen(),
+        ],
       ),
       bottomNavigationBar: SafeArea(
+              top: false,
         child: Container(
+          margin: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           height: 64,
-          decoration: const BoxDecoration(
-            color: Color(0xFF171717),
-            border: Border(top: BorderSide(color: Color(0x0FFFFFFF))),
+          decoration: NeumorphicDecoration.raised(
+            radius: 22,
+            distance: 4,
+            blur: 8,
           ),
-          child: Row(
-            children: List.generate(_tabs.length, (i) {
-              final sel = _tab == i;
-              return Expanded(
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () => _switchTab(i),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      AnimatedContainer(
-                        duration: const Duration(milliseconds: 200),
-                        curve: Curves.easeInOut,
-                        height: 3, width: sel ? 32 : 0,
-                        margin: const EdgeInsets.only(bottom: 6),
-                        decoration: BoxDecoration(
-                          color: sel ? const Color(0xFF003F7A) : Colors.transparent,
-                          borderRadius: const BorderRadius.vertical(bottom: Radius.circular(2)),
-                        ),
-                      ),
-                      Icon(_tabs[i].$2, size: 22,
-                          color: sel ? const Color(0xFF003F7A) : const Color(0xFF666666)),
-                      const SizedBox(height: 2),
-                      Text(_tabs[i].$1,
-                          style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500,
-                              color: sel ? const Color(0xFF003F7A) : const Color(0xFF666666))),
-                    ],
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final tabWidth = constraints.maxWidth / _tabs.length;
+              return Stack(
+                children: [
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 280),
+                    curve: Curves.easeOutBack,
+                    left: _tab * tabWidth + 6,
+                    top: 6,
+                    width: tabWidth - 12,
+                    height: constraints.maxHeight - 12,
+                    child: Container(
+                      decoration: NeumorphicDecoration.recessed(radius: 14),
+                    ),
                   ),
-                ),
+                  Row(
+                    children: List.generate(_tabs.length, (index) {
+                      final item = _tabs[index];
+                      final isSelected = _tab == index;
+
+                      return Expanded(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            if (_tab != index) {
+                              HapticFeedback.selectionClick();
+                              setState(() => _tab = index);
+                            }
+                          },
+                          child: Center(
+                            child: AnimatedScale(
+                              scale: isSelected ? 1.06 : 0.94,
+                              duration: const Duration(milliseconds: 220),
+                              curve: Curves.easeOutBack,
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  AnimatedSwitcher(
+                                    duration: const Duration(milliseconds: 180),
+                                    child: Icon(
+                                      isSelected ? item.$3 : item.$2,
+                                      key: ValueKey(isSelected),
+                                      size: 20,
+                                      color: isSelected
+                                          ? HermesTokens.accent
+                                          : HermesTokens.navInactive,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  AnimatedDefaultTextStyle(
+                                    duration: const Duration(milliseconds: 200),
+                                    curve: Curves.easeOutQuad,
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: isSelected
+                                          ? FontWeight.w700
+                                          : FontWeight.w500,
+                                      color: isSelected
+                                          ? HermesTokens.accent
+                                          : HermesTokens.navInactive,
+                                    ),
+                                    child: Text(
+                                      item.$1,
+                                      maxLines: 1,
+                                      softWrap: false,
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ],
               );
-            }),
+            },
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _splash(String msg, {VoidCallback? onRetry}) {
-    return Scaffold(
-      body: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          const Icon(Icons.bolt, size: 64, color: Color(0xFF003F7A)),
-          const SizedBox(height: 24),
-          Text('Hermes', style: Theme.of(context).textTheme.headlineMedium
-              ?.copyWith(fontWeight: FontWeight.bold, color: const Color(0xFFECECEC))),
-          const SizedBox(height: 16),
-          Text(msg, style: Theme.of(context).textTheme.bodyMedium
-              ?.copyWith(color: const Color(0xFF8E8E8E))),
-          const SizedBox(height: 24),
-          if (onRetry != null)
-            FilledButton.icon(
-              onPressed: onRetry,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Retry'),
-            )
-          else
-            const SizedBox(width: 24, height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2.5, color: Color(0xFF003F7A))),
-        ]),
       ),
     );
   }

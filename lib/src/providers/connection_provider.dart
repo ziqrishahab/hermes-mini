@@ -1,6 +1,5 @@
 import "dart:async";
 import "package:flutter_riverpod/flutter_riverpod.dart";
-import "../config/dev_config.dart";
 import "../models/connection_config.dart";
 import "../services/hermes_connection.dart";
 import "../services/storage_service.dart";
@@ -71,3 +70,15 @@ class ConnectionNotifier extends StateNotifier<AsyncValue<HermesConnection?>> {
     state = const AsyncValue.data(null);
   }
 }
+
+/// Gateway messaging platforms provider
+final gatewaysProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final conn = ref.watch(connectionProvider).valueOrNull;
+  if (conn == null) return [];
+  try {
+    return await conn.getMessagingPlatforms();
+  } catch (_) {
+    return [];
+  }
+});
+

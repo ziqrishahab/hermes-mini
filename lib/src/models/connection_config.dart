@@ -12,6 +12,7 @@ class ConnectionConfig {
   final int? sshPort;
   final String? sshUsername;
   final String? privateKeyPath;
+  final String? sshPassword;
   final int? remoteHermesPort;
 
   const ConnectionConfig({
@@ -22,20 +23,23 @@ class ConnectionConfig {
     this.sshPort,
     this.sshUsername,
     this.privateKeyPath,
+    this.sshPassword,
     this.remoteHermesPort,
   });
 
   bool get isComplete {
     if (mode == ConnectionMode.remote) {
-      return apiUrl != null && apiUrl!.isNotEmpty && apiKey != null;
+      return apiUrl != null && apiUrl!.isNotEmpty && apiKey != null && apiKey!.isNotEmpty;
     }
     return sshHost != null &&
         sshHost!.isNotEmpty &&
         sshUsername != null &&
         sshUsername!.isNotEmpty &&
-        privateKeyPath != null &&
-        privateKeyPath!.isNotEmpty;
+        (privateKeyPath != null && privateKeyPath!.isNotEmpty ||
+         sshPassword != null && sshPassword!.isNotEmpty);
   }
+
+  bool get usePasswordAuth => sshPassword != null && sshPassword!.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
     'mode': mode.name,
@@ -45,6 +49,7 @@ class ConnectionConfig {
     'sshPort': sshPort,
     'sshUsername': sshUsername,
     'privateKeyPath': privateKeyPath,
+    'sshPassword': sshPassword,
     'remoteHermesPort': remoteHermesPort,
   };
 
@@ -57,6 +62,7 @@ class ConnectionConfig {
       sshPort: json['sshPort'] as int?,
       sshUsername: json['sshUsername'] as String?,
       privateKeyPath: json['privateKeyPath'] as String?,
+      sshPassword: json['sshPassword'] as String?,
       remoteHermesPort: json['remoteHermesPort'] as int?,
     );
   }
@@ -69,6 +75,7 @@ class ConnectionConfig {
     int? sshPort,
     String? sshUsername,
     String? privateKeyPath,
+    String? sshPassword,
     int? remoteHermesPort,
   }) {
     return ConnectionConfig(
@@ -79,6 +86,7 @@ class ConnectionConfig {
       sshPort: sshPort ?? this.sshPort,
       sshUsername: sshUsername ?? this.sshUsername,
       privateKeyPath: privateKeyPath ?? this.privateKeyPath,
+      sshPassword: sshPassword ?? this.sshPassword,
       remoteHermesPort: remoteHermesPort ?? this.remoteHermesPort,
     );
   }

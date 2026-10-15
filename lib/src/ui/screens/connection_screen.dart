@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:go_router/go_router.dart';
-import 'package:path/path.dart' as path;
+
 import '../../models/connection_config.dart';
 import '../../providers/connection_provider.dart';
+import '../../theme.dart';
+import '../widgets/tactile_feedback.dart';
 
 class ConnectionScreen extends ConsumerStatefulWidget {
   const ConnectionScreen({super.key});
@@ -14,484 +15,416 @@ class ConnectionScreen extends ConsumerStatefulWidget {
 }
 
 class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
-  ConnectionMode _mode = ConnectionMode.remote;
-
   final _apiUrlCtrl = TextEditingController();
   final _apiKeyCtrl = TextEditingController();
-  final _sshHostCtrl = TextEditingController();
-  final _sshPortCtrl = TextEditingController(text: '22');
-  final _sshUserCtrl = TextEditingController();
-  final _remotePortCtrl = TextEditingController(text: '8642');
-  final _privateKeyCtrl = TextEditingController();
 
   final _apiUrlFocus = FocusNode();
   final _apiKeyFocus = FocusNode();
-  final _sshHostFocus = FocusNode();
-  final _sshPortFocus = FocusNode();
-  final _sshUserFocus = FocusNode();
-  final _remotePortFocus = FocusNode();
 
-  String? _privateKeyPath;
   bool _testing = false;
-  String? _focusedField;
+  bool _showApiKey = false;
+  bool _showGuide = false;
 
   @override
   void initState() {
     super.initState();
     final saved = ref.read(connectionConfigProvider);
-    if (saved != null) _fillFromConfig(saved);
-
-    for (final fn in [
-      _apiUrlFocus,
-      _apiKeyFocus,
-      _sshHostFocus,
-      _sshPortFocus,
-      _sshUserFocus,
-      _remotePortFocus,
-    ]) {
-      fn.addListener(_onFocusChange);
+    if (saved != null) {
+      _apiUrlCtrl.text = saved.apiUrl ?? '';
+      _apiKeyCtrl.text = saved.apiKey ?? '';
+    } else {
+      _apiUrlCtrl.text = '';
+      _apiKeyCtrl.text = '';
     }
-  }
-
-  void _onFocusChange() {
-    setState(() {
-      if (_apiUrlFocus.hasFocus) {
-        _focusedField = 'apiUrl';
-      } else if (_apiKeyFocus.hasFocus) {
-        _focusedField = 'apiKey';
-      } else if (_sshHostFocus.hasFocus) {
-        _focusedField = 'sshHost';
-      } else if (_sshPortFocus.hasFocus || _remotePortFocus.hasFocus) {
-        _focusedField = 'ports';
-      } else if (_sshUserFocus.hasFocus) {
-        _focusedField = 'sshUser';
-      } else {
-        _focusedField = null;
-      }
-    });
   }
 
   @override
   void dispose() {
     _apiUrlCtrl.dispose();
     _apiKeyCtrl.dispose();
-    _sshHostCtrl.dispose();
-    _sshPortCtrl.dispose();
-    _sshUserCtrl.dispose();
-    _remotePortCtrl.dispose();
-    _privateKeyCtrl.dispose();
     _apiUrlFocus.dispose();
     _apiKeyFocus.dispose();
-    _sshHostFocus.dispose();
-    _sshPortFocus.dispose();
-    _sshUserFocus.dispose();
-    _remotePortFocus.dispose();
     super.dispose();
   }
 
-  void _fillFromConfig(ConnectionConfig c) {
-    _mode = c.mode;
-    _apiUrlCtrl.text = c.apiUrl ?? '';
-    _apiKeyCtrl.text = c.apiKey ?? '';
-    _sshHostCtrl.text = c.sshHost ?? '';
-    _sshPortCtrl.text = c.sshPort?.toString() ?? '22';
-    _sshUserCtrl.text = c.sshUsername ?? '';
-    _remotePortCtrl.text = c.remoteHermesPort?.toString() ?? '8642';
-    _privateKeyPath = c.privateKeyPath;
-    _privateKeyCtrl.text = c.privateKeyPath != null
-        ? path.basename(c.privateKeyPath!)
-        : '';
-  }
+  Future<void> _connect() async {
+    final url = _apiUrlCtrl.text.trim();
+    final key = _apiKeyCtrl.text.trim();
 
-  Future<void> _pickKey() async {
-    final result = await FilePicker.platform.pickFiles();
-    if (result != null && result.files.single.path != null) {
-      final picked = result.files.single.path!;
-      setState(() {
-        _privateKeyPath = picked;
-        _privateKeyCtrl.text = path.basename(picked);
-      });
+    if (url.isEmpty || key.isEmpty) {
+      _showError('Please enter both Gateway URL and Password / API Key');
+      return;
     }
-  }
 
-  Future<void> _testConnection() async {
+    final config = ConnectionConfig(
+      mode: ConnectionMode.remote,
+      apiUrl: url,
+      apiKey: key,
+    );
+
     setState(() => _testing = true);
-    final config = _buildConfig();
+
     final ok = await ref
         .read(connectionProvider.notifier)
         .testAndConnect(config);
+
+    if (!mounted) return;
     setState(() => _testing = false);
-    if (ok && mounted) {
+
+    if (ok) {
       context.go('/home');
-    } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Connection failed. Check your settings.'),
-        ),
-      );
+    } else {
+      final err = ref
+          .read(connectionProvider)
+          .whenOrNull(error: (e, _) => e.toString());
+      _showError(err ?? 'Connection failed. Verify host and credentials.');
     }
   }
 
-  ConnectionConfig _buildConfig() {
-    return ConnectionConfig(
-      mode: _mode,
-      apiUrl: _apiUrlCtrl.text.trim(),
-      apiKey: _apiKeyCtrl.text.trim(),
-      sshHost: _sshHostCtrl.text.trim(),
-      sshPort: int.tryParse(_sshPortCtrl.text),
-      sshUsername: _sshUserCtrl.text.trim(),
-      privateKeyPath: _privateKeyPath,
-      remoteHermesPort: int.tryParse(_remotePortCtrl.text),
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: HermesTokens.error,
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-    const lavender = Color(0xFFC7B8EA);
-
     return Scaffold(
+      backgroundColor: HermesTokens.bgPrimary,
       body: SafeArea(
-        child: SingleChildScrollView(
-          physics: const ClampingScrollPhysics(),
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Column(
-                  children: [
-                    Container(
-                      width: 64,
-                      height: 64,
-                      decoration: BoxDecoration(
-                        gradient: const LinearGradient(
-                          colors: [lavender, Color(0xFFEADD95)],
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
+        child: Center(
+          child: SingleChildScrollView(
+            physics: const ClampingScrollPhysics(),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Logo Container (Neumorphic Raised with Hermes Asset)
+                  Center(
+                    child: Container(
+                      width: 76,
+                      height: 76,
+                      decoration: NeumorphicDecoration.circle(
+                        distance: 5,
+                        blur: 10,
+                      ),
+                      child: ClipOval(
+                        child: Image.asset(
+                          'assets/icons/hermes_logo.png',
+                          fit: BoxFit.cover,
+                          errorBuilder: (_, _, _) => const Center(
+                            child: Icon(
+                              Icons.auto_awesome_rounded,
+                              size: 36,
+                              color: HermesTokens.accent,
+                            ),
+                          ),
                         ),
-                        borderRadius: BorderRadius.circular(18),
-                        boxShadow: [
-                          BoxShadow(
-                            color: lavender.withValues(alpha: 0.3),
-                            blurRadius: 16,
-                            offset: const Offset(0, 6),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Brand Title
+                  const Center(
+                    child: Text(
+                      'MyPixie',
+                      style: TextStyle(
+                        fontSize: 26,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -0.5,
+                        color: HermesTokens.textPrimary,
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 6),
+
+                  const Center(
+                    child: Text(
+                      'Remote Gateway Connection',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: HermesTokens.textSecondary,
+                        letterSpacing: 0.1,
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 24),
+
+                  // Main Form Card (Neumorphic Raised Container)
+                  Container(
+                    padding: const EdgeInsets.all(22),
+                    decoration: NeumorphicDecoration.raised(
+                      radius: 22,
+                      distance: 5.5,
+                      blur: 11,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Gateway URL Field
+                        _buildNeumorphicField(
+                          controller: _apiUrlCtrl,
+                          focusNode: _apiUrlFocus,
+                          label: 'GATEWAY URL',
+                          hint: 'Hostname / IP Address',
+                          icon: Icons.link_rounded,
+                          keyboardType: TextInputType.url,
+                        ),
+                        const SizedBox(height: 18),
+
+                        // Password / API Key Field
+                        _buildNeumorphicField(
+                          controller: _apiKeyCtrl,
+                          focusNode: _apiKeyFocus,
+                          label: 'PASSWORD / API KEY',
+                          hint: 'Password / Api Token',
+                          icon: Icons.key_outlined,
+                          keyboardType: TextInputType.visiblePassword,
+                          obscureText: !_showApiKey,
+                          suffix: IconButton(
+                            icon: Icon(
+                              _showApiKey
+                                  ? Icons.visibility_off
+                                  : Icons.visibility,
+                              size: 18,
+                              color: HermesTokens.textMuted,
+                            ),
+                            onPressed: () =>
+                                setState(() => _showApiKey = !_showApiKey),
+                          ),
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        // Toggle Connection Setup Guide
+                        GestureDetector(
+                          onTap: () => setState(() => _showGuide = !_showGuide),
+                          child: Row(
+                            children: [
+                              Icon(
+                                _showGuide
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.help_outline_rounded,
+                                size: 15,
+                                color: HermesTokens.accentText,
+                              ),
+                              const SizedBox(width: 5),
+                              Text(
+                                _showGuide
+                                    ? 'Hide connection guide'
+                                    : 'How does Remote Gateway work?',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: HermesTokens.accentText,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        if (_showGuide) ...[
+                          const SizedBox(height: 12),
+                          Container(
+                            padding: const EdgeInsets.all(12),
+                            decoration: NeumorphicDecoration.recessed(
+                              radius: 12,
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  "1. Local Network",
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: HermesTokens.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  "Run on host: hermes dashboard --host 0.0.0.0\n"
+                                  "Ensure phone and host share the same Wi-Fi. Enter host local IP, e.g. http://<host-ip>:9119.",
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: HermesTokens.textMuted,
+                                    height: 1.4,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                const Text(
+                                  "2. Remote Access",
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: HermesTokens.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                const Text(
+                                  "Use Tailscale (http://100.x.y.z:9119) or Cloudflare Tunnel (https://your-domain.com).",
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    color: HermesTokens.textMuted,
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+
+                        const SizedBox(height: 22),
+
+                        // Connect Button (Neumorphic Primary Button)
+                        TactileContainer(
+                          onTap: _testing ? null : _connect,
+                          child: Container(
+                            height: 48,
+                            alignment: Alignment.center,
+                            decoration: NeumorphicDecoration.raised(
+                              radius: 14,
+                              color: HermesTokens.accent,
+                              distance: 3.5,
+                              blur: 7,
+                            ),
+                            child: _testing
+                                ? const SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2.5,
+                                      color: Colors.white,
+                                    ),
+                                  )
+                                : const Row(
+                                    mainAxisAlignment: MainAxisAlignment.center,
+                                    children: [
+                                      Icon(
+                                        Icons.arrow_forward_rounded,
+                                        size: 18,
+                                        color: Colors.white,
+                                      ),
+                                      SizedBox(width: 8),
+                                      Text(
+                                        'Connect',
+                                        style: TextStyle(
+                                          fontSize: 14,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.white,
+                                          letterSpacing: 0.3,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  const SizedBox(height: 22),
+
+                  // Footer Security Note (Recessed Neumorphic Pill)
+                  Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                      decoration: NeumorphicDecoration.recessed(radius: 20),
+                      child: const Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.lock_outline,
+                            size: 13,
+                            color: HermesTokens.textMuted,
+                          ),
+                          SizedBox(width: 6),
+                          Text(
+                            'Credentials stored securely on device',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: HermesTokens.textMuted,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ),
-                      child: const Icon(
-                        Icons.bolt,
-                        size: 32,
-                        color: Color(0xFF121212),
-                      ),
                     ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Hermes',
-                      style: textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: -0.5,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Connect to your agent',
-                      style: textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 28),
-
-              _buildModeToggle(),
-              const SizedBox(height: 20),
-
-              Text(
-                _mode == ConnectionMode.remote ? 'Remote API' : 'SSH Tunnel',
-                style: textTheme.titleSmall?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _mode == ConnectionMode.remote
-                    ? 'Connect directly to a public Hermes API endpoint.'
-                    : 'Forward a remote Hermes instance through an SSH tunnel.',
-                style: textTheme.bodySmall?.copyWith(
-                  color: colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              AnimatedSwitcher(
-                duration: const Duration(milliseconds: 250),
-                transitionBuilder: (child, animation) {
-                  return FadeTransition(
-                    opacity: animation,
-                    child: SizeTransition(
-                      sizeFactor: animation,
-                      axisAlignment: -1,
-                      child: child,
-                    ),
-                  );
-                },
-                child: Container(
-                  key: ValueKey(_mode),
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF242424),
-                    borderRadius: BorderRadius.circular(16),
                   ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: _mode == ConnectionMode.remote
-                        ? _remoteFields
-                        : _sshFields,
-                  ),
-                ),
+                ],
               ),
-              const SizedBox(height: 20),
-
-              Container(
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [
-                    BoxShadow(
-                      color: lavender.withValues(alpha: 0.35),
-                      blurRadius: 10,
-                      offset: const Offset(0, 4),
-                    ),
-                  ],
-                ),
-                child: FilledButton.icon(
-                  onPressed: _testing ? null : _testConnection,
-                  style: FilledButton.styleFrom(
-                    backgroundColor: lavender,
-                    foregroundColor: const Color(0xFF121212),
-                    disabledBackgroundColor: lavender.withValues(alpha: 0.5),
-                    disabledForegroundColor: const Color(
-                      0xFF121212,
-                    ).withValues(alpha: 0.5),
-                    padding: const EdgeInsets.symmetric(vertical: 16),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    minimumSize: const Size(double.infinity, 0),
-                  ),
-                  icon: _testing
-                      ? SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            color: colorScheme.onPrimary,
-                          ),
-                        )
-                      : const Icon(Icons.link),
-                  label: Text(
-                    _testing ? 'Connecting...' : 'Test & Connect',
-                    style: const TextStyle(fontSize: 16),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              Center(
-                child: Text(
-                  'Your credentials are stored securely on this device.',
-                  textAlign: TextAlign.center,
-                  style: textTheme.bodySmall?.copyWith(
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
 
-  Widget _buildModeToggle() {
-    final colorScheme = Theme.of(context).colorScheme;
-    const lavender = Color(0xFFC7B8EA);
-
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1A),
-        borderRadius: BorderRadius.circular(28),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: GestureDetector(
-              onTap: () => setState(() => _mode = ConnectionMode.remote),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: _mode == ConnectionMode.remote
-                      ? lavender
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Center(
-                  child: Text(
-                    'Remote',
-                    style: TextStyle(
-                      color: _mode == ConnectionMode.remote
-                          ? const Color(0xFF121212)
-                          : colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          Expanded(
-            child: GestureDetector(
-              onTap: () => setState(() => _mode = ConnectionMode.sshTunnel),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
-                padding: const EdgeInsets.symmetric(vertical: 10),
-                decoration: BoxDecoration(
-                  color: _mode == ConnectionMode.sshTunnel
-                      ? lavender
-                      : Colors.transparent,
-                  borderRadius: BorderRadius.circular(24),
-                ),
-                child: Center(
-                  child: Text(
-                    'SSH Tunnel',
-                    style: TextStyle(
-                      color: _mode == ConnectionMode.sshTunnel
-                          ? const Color(0xFF121212)
-                          : colorScheme.onSurfaceVariant,
-                      fontWeight: FontWeight.w600,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _gridField({
+  Widget _buildNeumorphicField({
     required TextEditingController controller,
     required String label,
-    String? hint,
+    required String hint,
+    required IconData icon,
+    FocusNode? focusNode,
     TextInputType? keyboardType,
     bool obscureText = false,
-    bool readOnly = false,
-    VoidCallback? onTap,
-    IconData? icon,
-    String? focusId,
-    FocusNode? focusNode,
+    Widget? suffix,
   }) {
-    final isFocused = _focusedField == focusId;
-    final iconColor = isFocused
-        ? const Color(0xFFC7B8EA)
-        : const Color(0xFF948F99);
-
-    return TextField(
-      controller: controller,
-      readOnly: readOnly,
-      onTap: onTap,
-      obscureText: obscureText,
-      keyboardType: keyboardType,
-      focusNode: focusNode,
-      style: const TextStyle(color: Color(0xFFE5E2E1)),
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hint,
-        prefixIcon: icon != null
-            ? Icon(icon, size: 20, color: iconColor)
-            : null,
-        contentPadding: const EdgeInsets.symmetric(
-          horizontal: 16,
-          vertical: 14,
-        ),
-      ),
-    );
-  }
-
-  List<Widget> get _remoteFields => [
-    _gridField(
-      controller: _apiUrlCtrl,
-      label: 'Hermes API URL',
-      hint: 'https://your-server:8642',
-      keyboardType: TextInputType.url,
-      focusId: 'apiUrl',
-      focusNode: _apiUrlFocus,
-    ),
-    const SizedBox(height: 12),
-    _gridField(
-      controller: _apiKeyCtrl,
-      label: 'API Key',
-      obscureText: true,
-      focusId: 'apiKey',
-      focusNode: _apiKeyFocus,
-    ),
-  ];
-
-  List<Widget> get _sshFields => [
-    _gridField(
-      controller: _sshHostCtrl,
-      label: 'SSH Host',
-      hint: 'your-vps.com',
-      keyboardType: TextInputType.url,
-      focusId: 'sshHost',
-      focusNode: _sshHostFocus,
-    ),
-    const SizedBox(height: 12),
-    Row(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: _gridField(
-            controller: _sshPortCtrl,
-            label: 'Port',
-            keyboardType: TextInputType.number,
-            focusId: 'ports',
-            focusNode: _sshPortFocus,
+        Text(
+          label,
+          style: const TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+            color: HermesTokens.textMuted,
           ),
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _gridField(
-            controller: _remotePortCtrl,
-            label: 'Hermes',
-            keyboardType: TextInputType.number,
-            focusId: 'ports',
-            focusNode: _remotePortFocus,
+        const SizedBox(height: 7),
+        Container(
+          decoration: NeumorphicDecoration.recessed(radius: 12),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+          child: TextField(
+            controller: controller,
+            focusNode: focusNode,
+            obscureText: obscureText,
+            keyboardType: keyboardType,
+            style: const TextStyle(
+              color: HermesTokens.textPrimary,
+              fontSize: 13,
+              fontWeight: FontWeight.w500,
+            ),
+            decoration: InputDecoration(
+              icon: Icon(icon, size: 18, color: HermesTokens.textMuted),
+              hintText: hint,
+              hintStyle: const TextStyle(
+                color: HermesTokens.textMuted,
+                fontSize: 13,
+              ),
+              suffixIcon: suffix,
+              border: InputBorder.none,
+              contentPadding: const EdgeInsets.symmetric(vertical: 12),
+              isDense: true,
+            ),
           ),
         ),
       ],
-    ),
-    const SizedBox(height: 12),
-    _gridField(
-      controller: _sshUserCtrl,
-      label: 'Username',
-      focusId: 'sshUser',
-      focusNode: _sshUserFocus,
-    ),
-    const SizedBox(height: 12),
-    _gridField(
-      controller: _privateKeyCtrl,
-      label: 'Private Key',
-      hint: 'Tap to pick a key file',
-      readOnly: true,
-      onTap: _pickKey,
-    ),
-  ];
+    );
+  }
 }

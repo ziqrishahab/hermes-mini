@@ -1,1 +1,0 @@
-Uses `dartssh2` for native Dart SSH tunneling and `dio` for HTTP/SSE streaming, integrated with `flutter_riverpod` for reactive state management and `go_router` for declarative navigation.
