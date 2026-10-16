@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import '../../models/chat_message.dart';
 import '../../theme.dart';
@@ -450,6 +451,37 @@ class _ToolCallAccordion extends StatefulWidget {
 class _ToolCallAccordionState extends State<_ToolCallAccordion> {
   bool _expanded = false;
 
+  String _formatInputDisplay(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        if (decoded.containsKey('command') && decoded.length == 1) {
+          return '\$ ${decoded['command']}';
+        }
+        if (decoded.containsKey('cmd') && decoded.length == 1) {
+          return '\$ ${decoded['cmd']}';
+        }
+        if (decoded.containsKey('CommandLine') && decoded.length == 1) {
+          return '\$ ${decoded['CommandLine']}';
+        }
+        const encoder = JsonEncoder.withIndent('  ');
+        return encoder.convert(decoded);
+      }
+    } catch (_) {}
+    return raw;
+  }
+
+  String _formatOutputDisplay(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map || decoded is List) {
+        const encoder = JsonEncoder.withIndent('  ');
+        return encoder.convert(decoded);
+      }
+    } catch (_) {}
+    return raw;
+  }
+
   IconData _iconForTool(String name) {
     final lower = name.toLowerCase();
     if (lower.contains('bash') ||
@@ -589,8 +621,8 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: HermesTokens.border),
                       ),
-                      child: Text(
-                        widget.input!,
+                      child: SelectableText(
+                        _formatInputDisplay(widget.input!),
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 11,
@@ -620,8 +652,8 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: HermesTokens.border),
                       ),
-                      child: Text(
-                        widget.output!,
+                      child: SelectableText(
+                        _formatOutputDisplay(widget.output!),
                         style: const TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 11,

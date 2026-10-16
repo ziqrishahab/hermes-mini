@@ -5,6 +5,7 @@ import "package:go_router/go_router.dart";
 import "../../services/hermes_connection.dart";
 import "../../providers/connection_provider.dart";
 import "../../theme.dart";
+import "../widgets/expandable_text.dart";
 import "../widgets/neumorphic_skeleton.dart";
 
 final skillsProvider = FutureProvider<List<SkillInfo>>((ref) async {
@@ -37,6 +38,12 @@ final pluginsProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
   return conn.getPlugins();
 });
 
+final pluginCatalogProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
+  final conn = ref.watch(connectionProvider).valueOrNull;
+  if (conn == null) return [];
+  return conn.getPluginCatalog();
+});
+
 class CapabilitiesScreen extends ConsumerStatefulWidget {
   const CapabilitiesScreen({super.key});
   @override
@@ -49,7 +56,10 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
   final _skillSearchCtrl = TextEditingController();
   final _toolsetSearchCtrl = TextEditingController();
   final _mcpSearchCtrl = TextEditingController();
+  final _pluginSearchCtrl = TextEditingController();
   int _mcpTabSegment = 0; // 0: Configured, 1: Catalog
+  int _pluginTabSegment = 0; // 0: Installed, 1: Catalog
+  final Set<String> _pendingPluginOps = {};
   String _selectedCategory = "All";
 
   @override
@@ -64,6 +74,7 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
     _skillSearchCtrl.dispose();
     _toolsetSearchCtrl.dispose();
     _mcpSearchCtrl.dispose();
+    _pluginSearchCtrl.dispose();
     super.dispose();
   }
 
@@ -82,6 +93,7 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
     final mcpAsync = ref.watch(mcpServersProvider);
     final mcpCatalogAsync = ref.watch(mcpCatalogProvider);
     final pluginsAsync = ref.watch(pluginsProvider);
+    final pluginCatalogAsync = ref.watch(pluginCatalogProvider);
 
     return Scaffold(
       backgroundColor: HermesTokens.bgPrimary,
@@ -160,7 +172,7 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
           _buildSkillsTab(skillsAsync),
           _buildToolsetsTab(toolsetsAsync),
           _buildMcpTab(mcpAsync, mcpCatalogAsync),
-          _buildPluginTab(pluginsAsync),
+          _buildPluginTab(pluginsAsync, pluginCatalogAsync),
         ],
       ),
     );
@@ -404,11 +416,9 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
                         ],
                       ),
                       const SizedBox(height: 4),
-                      Text(
-                        skill.description.isNotEmpty ? skill.description : "No description provided.",
-                        style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                      ExpandableText(
+                        text: skill.description.isNotEmpty ? skill.description : "No description provided.",
                         maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
                       ),
                     ],
                   ),
@@ -726,9 +736,9 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
                                     ],
                                   ),
                                   const SizedBox(height: 4),
-                                  Text(
-                                    t.description,
-                                    style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                                  ExpandableText(
+                                    text: t.description,
+                                    maxLines: 2,
                                   ),
                                 ],
                               ),
@@ -1024,9 +1034,9 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
                                         ],
                                       ),
                                       const SizedBox(height: 3),
-                                      Text(
-                                        desc,
-                                        style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                                      ExpandableText(
+                                        text: desc,
+                                        maxLines: 2,
                                       ),
                                     ],
                                   ),
@@ -1126,9 +1136,9 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
                                               ],
                                             ),
                                             const SizedBox(height: 4),
-                                            Text(
-                                              desc,
-                                              style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                                            ExpandableText(
+                                              text: desc,
+                                              maxLines: 2,
                                             ),
                                             if (hasEnv) ...[
                                               const SizedBox(height: 6),
@@ -1396,102 +1406,715 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
     }
   }
 
-  Widget _buildPluginTab(AsyncValue<List<Map<String, dynamic>>> pluginsAsync) {
+  Future<void> _togglePlugin(String name, bool enabled) async {
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn == null) return;
+
+    setState(() => _pendingPluginOps.add(name));
+
+    final success = await conn.setPluginEnabled(name, enabled);
+    if (!mounted) return;
+
+    setState(() => _pendingPluginOps.remove(name));
+
+    if (success) {
+      ref.invalidate(pluginsProvider);
+      ref.invalidate(pluginCatalogProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(enabled ? "Enabled $name" : "Disabled $name")),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Failed to ${enabled ? 'enable' : 'disable'} $name"),
+          backgroundColor: HermesTokens.error,
+        ),
+      );
+    }
+  }
+
+  Future<void> _confirmUninstallPlugin(String name) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFFE0E5EC),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text(
+          "Uninstall Plugin",
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
+        ),
+        content: Text(
+          "Are you sure you want to remove the '$name' plugin from your Hermes instance?",
+          style: const TextStyle(fontSize: 13, color: HermesTokens.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: HermesTokens.error,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text("Uninstall"),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn != null) {
+      final success = await conn.uninstallPlugin(name);
+      if (!mounted) return;
+      if (success) {
+        ref.invalidate(pluginsProvider);
+        ref.invalidate(pluginCatalogProvider);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Uninstalled $name")),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Failed to uninstall $name"), backgroundColor: HermesTokens.error),
+        );
+      }
+    }
+  }
+
+  Future<void> _showInstallPluginDialog(Map<String, dynamic> entry) async {
+    final name = entry['name']?.toString() ?? '';
+    final desc = entry['description']?.toString() ?? 'Hermes Agent Plugin';
+    final repo = entry['repo']?.toString() ?? '';
+    final summary = entry['capability_summary']?.toString() ?? '';
+
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.6),
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFFE0E5EC),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(
+          children: [
+            const Icon(Icons.extension_outlined, size: 20, color: HermesTokens.accent),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                "Install $name",
+                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(desc, style: const TextStyle(fontSize: 13, color: HermesTokens.textSecondary)),
+            if (repo.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                "Source: $repo",
+                style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted, fontFamily: 'JetBrains Mono'),
+              ),
+            ],
+            if (summary.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: HermesTokens.bgSecondary,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: HermesTokens.border),
+                ),
+                child: Text(
+                  summary,
+                  style: const TextStyle(fontSize: 11, color: HermesTokens.textSecondary),
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: HermesTokens.accent,
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            child: const Text("Install"),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn == null) return;
+
+    setState(() => _pendingPluginOps.add(name));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text("Installing $name from catalog...")),
+    );
+
+    final success = await conn.installPlugin(name);
+    if (!mounted) return;
+
+    setState(() => _pendingPluginOps.remove(name));
+
+    if (success) {
+      ref.invalidate(pluginsProvider);
+      ref.invalidate(pluginCatalogProvider);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Plugin '$name' installed successfully")),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("Failed to install plugin '$name'"), backgroundColor: HermesTokens.error),
+      );
+    }
+  }
+
+  Widget _buildPluginTab(
+    AsyncValue<List<Map<String, dynamic>>> pluginsAsync,
+    AsyncValue<List<Map<String, dynamic>>> catalogAsync,
+  ) {
     return RefreshIndicator(
       color: HermesTokens.accent,
       backgroundColor: HermesTokens.bgElevated,
       onRefresh: () async {
         ref.invalidate(pluginsProvider);
+        ref.invalidate(pluginCatalogProvider);
         try {
-          await ref.read(pluginsProvider.future);
+          await Future.wait([
+            ref.read(pluginsProvider.future),
+            ref.read(pluginCatalogProvider.future),
+          ]);
         } catch (_) {}
       },
-      child: pluginsAsync.when(
-        data: (plugins) {
-          if (plugins.isEmpty) {
-            return _buildEmptyState(
-              icon: Icons.folder_open_outlined,
-              title: "No Plugins Active",
-              message: "No custom plugins configured in this workspace.",
-              showRetry: true,
-              onRetry: () => ref.invalidate(pluginsProvider),
-            );
-          }
-          return ListView.builder(
-            physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 80),
-            itemCount: plugins.length,
-            itemBuilder: (context, index) {
-              final p = plugins[index];
-              final label = p['label']?.toString() ?? p['name']?.toString() ?? 'Plugin';
-              final desc = p['description']?.toString() ?? '';
-              final ver = p['version']?.toString() ?? '';
-              final isKanban = label.toLowerCase().contains('kanban');
-              final isAchievements = label.toLowerCase().contains('achievement');
-              final hasAction = isKanban || isAchievements;
+      child: Builder(
+        builder: (context) {
+          final isPluginsLoading = pluginsAsync.isLoading && !pluginsAsync.hasValue;
+          final isCatalogLoading = catalogAsync.isLoading && !catalogAsync.hasValue;
 
-              return Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                decoration: NeumorphicDecoration.raised(radius: 16),
-                child: Material(
-                  color: Colors.transparent,
-                  child: InkWell(
-                    onTap: hasAction
-                        ? () {
-                            if (isKanban) context.push('/kanban');
-                            if (isAchievements) context.push('/achievements');
-                          }
-                        : null,
-                    borderRadius: BorderRadius.circular(16),
+          if (isPluginsLoading && isCatalogLoading) {
+            return const CapabilityListSkeleton();
+          }
+
+          final plugins = pluginsAsync.valueOrNull ?? [];
+          final catalog = catalogAsync.valueOrNull ?? [];
+
+          final query = _pluginSearchCtrl.text.trim().toLowerCase();
+
+          final filteredInstalled = plugins.where((p) {
+            final name = (p['name'] ?? p['label'] ?? '').toString().toLowerCase();
+            final desc = (p['description'] ?? '').toString().toLowerCase();
+            return query.isEmpty || name.contains(query) || desc.contains(query);
+          }).toList();
+
+          final filteredCatalog = catalog.where((c) {
+            final name = (c['name'] ?? '').toString().toLowerCase();
+            final desc = (c['description'] ?? '').toString().toLowerCase();
+            final cat = (c['category'] ?? '').toString().toLowerCase();
+            return query.isEmpty || name.contains(query) || desc.contains(query) || cat.contains(query);
+          }).toList();
+
+          return CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              // Segment switcher (Installed vs Catalog)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+                  child: Container(
+                    height: 40,
+                    decoration: NeumorphicDecoration.recessed(radius: 12),
+                    padding: const EdgeInsets.all(3),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => setState(() => _pluginTabSegment = 0),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 150),
+                              decoration: _pluginTabSegment == 0
+                                  ? BoxDecoration(
+                                      color: HermesTokens.accent,
+                                      borderRadius: BorderRadius.circular(9),
+                                      boxShadow: const [
+                                        BoxShadow(color: Color(0x332563EB), blurRadius: 4, offset: Offset(0, 2)),
+                                      ],
+                                    )
+                                  : null,
+                              alignment: Alignment.center,
+                              child: Text(
+                                "Installed (${plugins.length})",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: _pluginTabSegment == 0 ? FontWeight.w700 : FontWeight.w500,
+                                  color: _pluginTabSegment == 0 ? Colors.white : HermesTokens.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        Expanded(
+                          child: GestureDetector(
+                            onTap: () => setState(() => _pluginTabSegment = 1),
+                            child: AnimatedContainer(
+                              duration: const Duration(milliseconds: 150),
+                              decoration: _pluginTabSegment == 1
+                                  ? BoxDecoration(
+                                      color: HermesTokens.accent,
+                                      borderRadius: BorderRadius.circular(9),
+                                      boxShadow: const [
+                                        BoxShadow(color: Color(0x332563EB), blurRadius: 4, offset: Offset(0, 2)),
+                                      ],
+                                    )
+                                  : null,
+                              alignment: Alignment.center,
+                              child: Text(
+                                "Catalog (${catalog.length})",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: _pluginTabSegment == 1 ? FontWeight.w700 : FontWeight.w500,
+                                  color: _pluginTabSegment == 1 ? Colors.white : HermesTokens.textSecondary,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+
+              // Search Bar
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+                  child: Container(
+                    decoration: NeumorphicDecoration.recessed(radius: 12),
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    child: TextField(
+                      controller: _pluginSearchCtrl,
+                      style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
+                        hintText: _pluginTabSegment == 0
+                            ? "Search ${plugins.length} installed plugins..."
+                            : "Search catalog of ${catalog.length} plugins...",
+                        hintStyle: const TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                        prefixIcon: const Icon(Icons.search, color: HermesTokens.textMuted, size: 18),
+                        suffixIcon: query.isNotEmpty
+                            ? IconButton(
+                                icon: const Icon(Icons.clear, size: 16, color: HermesTokens.textMuted),
+                                onPressed: () {
+                                  _pluginSearchCtrl.clear();
+                                  setState(() {});
+                                },
+                              )
+                            : null,
+                        filled: false,
+                        border: InputBorder.none,
+                        enabledBorder: InputBorder.none,
+                        focusedBorder: InputBorder.none,
+                        contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                ),
+              ),
+
+              // Count & subtitle info
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 2, 18, 12),
+                  child: Row(
+                    children: [
+                      Text(
+                        _pluginTabSegment == 0
+                            ? "${filteredInstalled.length} INSTALLED PLUGINS"
+                            : "${filteredCatalog.length} AVAILABLE IN CATALOG",
+                        style: const TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.8,
+                          color: HermesTokens.textMuted,
+                        ),
+                      ),
+                      const Spacer(),
+                      if (_pluginTabSegment == 1)
+                        const Text(
+                          "Tap card to install",
+                          style: TextStyle(fontSize: 10, color: HermesTokens.textMuted),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // Content Sliver
+              if (_pluginTabSegment == 0) ...[
+                if (filteredInstalled.isEmpty)
+                  SliverToBoxAdapter(
                     child: Padding(
-                      padding: const EdgeInsets.all(14),
-                      child: Row(
-                        children: [
-                          Expanded(
+                      padding: const EdgeInsets.all(24),
+                      child: Center(
+                        child: Text(
+                          query.isNotEmpty
+                              ? "No installed plugins match '$query'"
+                              : "No plugins installed on this Hermes daemon",
+                          style: const TextStyle(fontSize: 13, color: HermesTokens.textMuted),
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+                    sliver: SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          final p = filteredInstalled[index];
+                          final name = (p['name'] ?? p['label'] ?? 'Plugin').toString();
+                          final desc = (p['description'] ?? '').toString();
+                          final ver = (p['version'] ?? '').toString();
+                          final source = (p['source'] ?? '').toString().toLowerCase();
+                          final isBundled = source == "bundled";
+                          final runtimeStatus = (p['runtime_status'] ?? '').toString().toLowerCase();
+                          final isEnabled = runtimeStatus == "enabled" || p['enabled'] == true;
+                          final canRemove = (p['can_remove_update'] == true || (!isBundled && source.isNotEmpty)) && !isBundled;
+                          final isPending = _pendingPluginOps.contains(name);
+
+                          final isKanban = name.toLowerCase().contains('kanban');
+                          final isAchievements = name.toLowerCase().contains('achievement');
+                          final isBuiltInCore = isKanban || isAchievements;
+                          final hasDirectAction = isKanban || isAchievements;
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            padding: const EdgeInsets.all(14),
+                            decoration: NeumorphicDecoration.raised(radius: 16),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Row(
                                   children: [
-                                    Text(
-                                      label,
-                                      style: const TextStyle(
-                                        fontSize: 14,
-                                        fontWeight: FontWeight.w700,
-                                        color: HermesTokens.textPrimary,
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Flexible(
+                                                child: Text(
+                                                  name,
+                                                  style: const TextStyle(
+                                                    fontSize: 14,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: HermesTokens.textPrimary,
+                                                  ),
+                                                  overflow: TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                              if (ver.isNotEmpty) ...[
+                                                const SizedBox(width: 8),
+                                                Text(
+                                                  "v$ver",
+                                                  style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                                                ),
+                                              ],
+                                            ],
+                                          ),
+                                          const SizedBox(height: 4),
+                                          Row(
+                                            children: [
+                                              // Source badge (Bundled / User)
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: isBundled
+                                                      ? const Color(0xFF6366F1).withValues(alpha: 0.12)
+                                                      : const Color(0xFF06B6D4).withValues(alpha: 0.12),
+                                                  borderRadius: BorderRadius.circular(6),
+                                                ),
+                                                child: Text(
+                                                  isBundled ? "BUNDLED" : "USER",
+                                                  style: TextStyle(
+                                                    fontSize: 9,
+                                                    fontWeight: FontWeight.w700,
+                                                    letterSpacing: 0.5,
+                                                    color: isBundled ? const Color(0xFF4F46E5) : const Color(0xFF0891B2),
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                              // Status badge
+                                              Container(
+                                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                decoration: BoxDecoration(
+                                                  color: isEnabled
+                                                      ? const Color(0xFF10B981).withValues(alpha: 0.12)
+                                                      : const Color(0xFF64748B).withValues(alpha: 0.12),
+                                                  borderRadius: BorderRadius.circular(6),
+                                                ),
+                                                child: Text(
+                                                  isEnabled ? "ACTIVE" : "DISABLED",
+                                                  style: TextStyle(
+                                                    fontSize: 9,
+                                                    fontWeight: FontWeight.w700,
+                                                    letterSpacing: 0.5,
+                                                    color: isEnabled ? const Color(0xFF059669) : const Color(0xFF64748B),
+                                                  ),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ],
                                       ),
                                     ),
-                                    if (ver.isNotEmpty) ...[
-                                      const SizedBox(width: 8),
-                                      Text(
-                                        "v$ver",
-                                        style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                                    const SizedBox(width: 10),
+                                    if (isPending)
+                                      const SizedBox(
+                                        width: 24,
+                                        height: 24,
+                                        child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
+                                      )
+                                    else if (!isBuiltInCore) ...[
+                                      Switch.adaptive(
+                                        value: isEnabled,
+                                        activeThumbColor: HermesTokens.accent,
+                                        onChanged: (val) => _togglePlugin(name, val),
                                       ),
+                                      if (canRemove) ...[
+                                        const SizedBox(width: 4),
+                                        InkWell(
+                                          onTap: () => _confirmUninstallPlugin(name),
+                                          borderRadius: BorderRadius.circular(8),
+                                          child: const Padding(
+                                            padding: EdgeInsets.all(6),
+                                            child: Icon(Icons.delete_outline_rounded, size: 18, color: HermesTokens.textMuted),
+                                          ),
+                                        ),
+                                      ],
                                     ],
                                   ],
                                 ),
                                 if (desc.isNotEmpty) ...[
-                                  const SizedBox(height: 4),
-                                  Text(desc, style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted)),
+                                  const SizedBox(height: 8),
+                                  ExpandableText(
+                                    text: desc,
+                                    maxLines: 2,
+                                  ),
+                                ],
+                                if (hasDirectAction) ...[
+                                  const SizedBox(height: 10),
+                                  Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: OutlinedButton.icon(
+                                      onPressed: () {
+                                        if (isKanban) context.push('/kanban');
+                                        if (isAchievements) context.push('/achievements');
+                                      },
+                                      style: OutlinedButton.styleFrom(
+                                        side: const BorderSide(color: HermesTokens.accent),
+                                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                        minimumSize: Size.zero,
+                                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                      ),
+                                      icon: Icon(
+                                        isKanban ? Icons.view_kanban_outlined : Icons.emoji_events_outlined,
+                                        size: 14,
+                                        color: HermesTokens.accent,
+                                      ),
+                                      label: Text(
+                                        isKanban ? "Open Kanban Board" : "Open Achievements",
+                                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.accent),
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ],
                             ),
-                          ),
-                          if (hasAction) ...[
-                            const SizedBox(width: 10),
-                            const Icon(Icons.arrow_forward_ios_rounded, size: 14, color: HermesTokens.textMuted),
-                          ],
-                        ],
+                          );
+                        },
+                        childCount: filteredInstalled.length,
                       ),
                     ),
                   ),
-                ),
-              );
-            },
+              ] else ...[
+                if (filteredCatalog.isEmpty)
+                  SliverToBoxAdapter(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Center(
+                        child: Text(
+                          query.isNotEmpty
+                              ? "No catalog entries match '$query'"
+                              : "No catalog entries returned from Hermes daemon",
+                          style: const TextStyle(fontSize: 13, color: HermesTokens.textMuted),
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 80),
+                    sliver: SliverList(
+                      delegate: SliverChildBuilderDelegate(
+                        (context, index) {
+                          final c = filteredCatalog[index];
+                          final name = (c['name'] ?? 'Plugin').toString();
+                          final desc = (c['description'] ?? 'Hermes Agent Plugin').toString();
+                          final category = (c['category'] ?? '').toString();
+                          final summary = (c['capability_summary'] ?? '').toString();
+                          final installed = c['installed'] as bool? ?? false;
+                          final isPending = _pendingPluginOps.contains(name);
+
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 12),
+                            decoration: NeumorphicDecoration.raised(radius: 16),
+                            child: Material(
+                              color: Colors.transparent,
+                              child: InkWell(
+                                onTap: installed ? null : () => _showInstallPluginDialog(c),
+                                borderRadius: BorderRadius.circular(16),
+                                child: Padding(
+                                  padding: const EdgeInsets.all(14),
+                                  child: Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                          children: [
+                                            Row(
+                                              children: [
+                                                Flexible(
+                                                  child: Text(
+                                                    name,
+                                                    style: const TextStyle(
+                                                      fontSize: 14,
+                                                      fontWeight: FontWeight.w700,
+                                                      color: HermesTokens.textPrimary,
+                                                    ),
+                                                    overflow: TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                                if (category.isNotEmpty) ...[
+                                                  const SizedBox(width: 8),
+                                                  Container(
+                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                                    decoration: BoxDecoration(
+                                                      color: HermesTokens.bgSecondary,
+                                                      borderRadius: BorderRadius.circular(6),
+                                                      border: Border.all(color: HermesTokens.border),
+                                                    ),
+                                                    child: Text(
+                                                      _formatCategory(category),
+                                                      style: const TextStyle(
+                                                        fontSize: 9,
+                                                        color: HermesTokens.textSecondary,
+                                                        fontWeight: FontWeight.w600,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
+                                              ],
+                                            ),
+                                            const SizedBox(height: 4),
+                                            ExpandableText(
+                                              text: desc,
+                                              maxLines: 3,
+                                            ),
+                                            if (summary.isNotEmpty) ...[
+                                              const SizedBox(height: 6),
+                                              ExpandableText(
+                                                text: summary,
+                                                maxLines: 2,
+                                                style: const TextStyle(
+                                                  fontSize: 10,
+                                                  color: HermesTokens.accentText,
+                                                  fontWeight: FontWeight.w500,
+                                                  height: 1.3,
+                                                ),
+                                              ),
+                                            ],
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      if (isPending)
+                                        const SizedBox(
+                                          width: 24,
+                                          height: 24,
+                                          child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
+                                        )
+                                      else if (installed)
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                                          ),
+                                          child: const Row(
+                                            mainAxisSize: MainAxisSize.min,
+                                            children: [
+                                              Icon(Icons.check_circle_outline_rounded, size: 13, color: Color(0xFF059669)),
+                                              SizedBox(width: 4),
+                                              Text(
+                                                "Installed",
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: Color(0xFF059669),
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        )
+                                      else
+                                        FilledButton(
+                                          onPressed: () => _showInstallPluginDialog(c),
+                                          style: FilledButton.styleFrom(
+                                            backgroundColor: HermesTokens.accent,
+                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                                            minimumSize: Size.zero,
+                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                          ),
+                                          child: const Text(
+                                            "Install",
+                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ),
+                          );
+                        },
+                        childCount: filteredCatalog.length,
+                      ),
+                    ),
+                  ),
+              ],
+            ],
           );
         },
-        loading: () => const CapabilityListSkeleton(),
-        error: (e, _) => _buildConnectionFailedState(e.toString(), () => ref.invalidate(pluginsProvider)),
       ),
     );
   }

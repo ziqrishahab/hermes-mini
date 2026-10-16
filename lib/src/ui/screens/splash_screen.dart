@@ -101,9 +101,12 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   @override
   Widget build(BuildContext context) {
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.dark.copyWith(
+      value: const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
         systemNavigationBarColor: HermesTokens.bgPrimary,
+        systemNavigationBarIconBrightness: Brightness.dark,
       ),
       child: Scaffold(
         backgroundColor: HermesTokens.bgPrimary,
@@ -113,7 +116,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
             children: [
               const Spacer(flex: 3),
 
-              // Animated Hero Logo with Neumorphic Surface & Glowing Aura
+              // Animated Hero Logo with Neumorphic Circular Surface & Glowing Aura
               Center(
                 child: AnimatedBuilder(
                   animation: Listenable.merge([_entryCtrl, _pulseCtrl]),
@@ -128,8 +131,8 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                         Transform.scale(
                           scale: pulseScale,
                           child: Container(
-                            width: 170,
-                            height: 170,
+                            width: 210,
+                            height: 210,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               gradient: RadialGradient(
@@ -144,32 +147,25 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                           ),
                         ),
 
-                        // Logo Card with Spring Entry
+                        // Character Logo inside Neumorphic Circle Card
                         FadeTransition(
                           opacity: _logoFade,
                           child: ScaleTransition(
                             scale: _logoScale,
                             child: Container(
-                              width: 140,
-                              height: 140,
+                              width: 168,
+                              height: 168,
                               decoration: NeumorphicDecoration.circle(
-                                distance: 8,
-                                blur: 16,
+                                distance: 7,
+                                blur: 18,
                               ),
-                              child: ClipOval(
-                                child: Image.asset(
+                              padding: const EdgeInsets.all(18),
+                              child: Image.asset(
+                                'assets/icons/pixie_transparent.png',
+                                fit: BoxFit.contain,
+                                errorBuilder: (_, _, _) => Image.asset(
                                   'assets/icons/hermes_logo.png',
-                                  fit: BoxFit.cover,
-                                  errorBuilder: (_, _, _) => Container(
-                                    color: HermesTokens.bgSecondary,
-                                    child: const Center(
-                                      child: Icon(
-                                        Icons.auto_awesome_rounded,
-                                        size: 48,
-                                        color: HermesTokens.accent,
-                                      ),
-                                    ),
-                                  ),
+                                  fit: BoxFit.contain,
                                 ),
                               ),
                             ),
@@ -188,9 +184,9 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                 position: _textSlide,
                 child: FadeTransition(
                   opacity: _textFade,
-                  child: Column(
+                  child: const Column(
                     children: [
-                      const Text(
+                      Text(
                         "M Y P I X I E",
                         style: TextStyle(
                           fontSize: 22,
@@ -199,14 +195,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                           color: HermesTokens.textPrimary,
                         ),
                       ),
-                      const SizedBox(height: 8),
+                      SizedBox(height: 8),
                       Text(
                         "AUTONOMOUS AGENT COMPANION",
                         style: TextStyle(
                           fontSize: 10,
                           fontWeight: FontWeight.w600,
                           letterSpacing: 2.5,
-                          color: HermesTokens.textMuted.withValues(alpha: 0.9),
+                          color: HermesTokens.textSecondary,
                         ),
                       ),
                     ],
@@ -216,13 +212,15 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
               const SizedBox(height: 36),
 
-              // Custom Shimmering Liquid Capsule Bar (Replacing spinner)
+              // Custom Shimmering Liquid Capsule Bar
               FadeTransition(
                 opacity: _indicatorFade,
                 child: const HermesLoadingIndicator(
                   width: 130,
                   height: 4.5,
                   statusText: "Initializing MyPixie Engine...",
+                  trackColor: HermesTokens.bgTertiary,
+                  textColor: HermesTokens.textSecondary,
                 ),
               ),
 
@@ -231,14 +229,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               // Bottom subtle version info
               FadeTransition(
                 opacity: _indicatorFade,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
+                child: const Padding(
+                  padding: EdgeInsets.only(bottom: 16),
                   child: Text(
                     "v1.0.0 • MyPixie",
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
-                      color: HermesTokens.textMuted.withValues(alpha: 0.6),
+                      color: HermesTokens.textMuted,
                       letterSpacing: 0.5,
                     ),
                   ),

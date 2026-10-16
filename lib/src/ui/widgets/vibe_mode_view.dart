@@ -64,11 +64,6 @@ class VibeModeView extends StatefulWidget {
   State<VibeModeView> createState() => _VibeModeViewState();
 }
 
-enum TerminalRunMode {
-  directCli,
-  agentAssist,
-}
-
 class _VibeModeViewState extends State<VibeModeView> {
   int _selectedFileIndex = 0;
   bool _isTerminalExpanded = false;
@@ -77,18 +72,16 @@ class _VibeModeViewState extends State<VibeModeView> {
   List<VibeFileItem> _files = [];
   List<VibeActivityItem> _activities = [];
   final Set<int> _expandedActivityIndices = {};
-  TerminalRunMode _terminalMode = TerminalRunMode.directCli;
   List<Map<String, dynamic>> _remoteFiles = [];
   bool _loadingRemoteFiles = false;
   String? _loadingFilePath;
   String? _resolvedCwd;
   String? _currentExplorerSubpath;
-  final TextEditingController _terminalInputCtrl = TextEditingController();
+  DateTime? _clearedTerminalTimestamp;
 
-  @override
-  void dispose() {
-    _terminalInputCtrl.dispose();
-    super.dispose();
+  bool _isActivityCleared(DateTime timestamp) {
+    if (_clearedTerminalTimestamp == null) return false;
+    return !timestamp.isAfter(_clearedTerminalTimestamp!);
   }
 
   @override
@@ -101,6 +94,12 @@ class _VibeModeViewState extends State<VibeModeView> {
   @override
   void didUpdateWidget(VibeModeView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    final isNewSession = widget.messages.isNotEmpty &&
+        oldWidget.messages.isNotEmpty &&
+        widget.messages.first.id != oldWidget.messages.first.id;
+    if (isNewSession || widget.messages.isEmpty) {
+      _clearedTerminalTimestamp = null;
+    }
     final messagesChanged = widget.messages.length != oldWidget.messages.length ||
         (widget.messages.isNotEmpty && oldWidget.messages.isNotEmpty &&
             (widget.messages.last.content != oldWidget.messages.last.content ||
@@ -273,31 +272,35 @@ class _VibeModeViewState extends State<VibeModeView> {
     for (int i = 0; i < widget.messages.length; i++) {
       final msg = widget.messages[i];
 
-      // 1. Explicit Tool Call Properties
+      // 1. Tool Call Message or Explicit Tool Properties
       if (msg.toolName != null && msg.toolName!.isNotEmpty) {
+        final out = (msg.toolOutput != null && msg.toolOutput!.isNotEmpty)
+            ? msg.toolOutput!
+            : (msg.role == MessageRole.tool ? msg.content : '');
         _processToolCall(
           name: msg.toolName!,
           input: msg.toolInput ?? '',
-          output: msg.toolOutput ?? '',
+          output: out,
           status: msg.toolStatus,
           timestamp: msg.timestamp,
           sourceIndex: i,
           filesMap: filesMap,
           activities: activities,
         );
-      }
-
-      // 2. Parse tool role message (Tool result)
-      if (msg.role == MessageRole.tool) {
-        final toolName = msg.toolName ?? 'Tool Result';
-        activities.add(VibeActivityItem(
-          title: toolName,
-          type: 'tool',
-          detail: 'Tool execution result',
-          output: msg.content.isNotEmpty ? msg.content : null,
-          timestamp: msg.timestamp,
-          isSuccess: !(msg.toolStatus == 'error'),
-        ));
+      } else if (msg.role == MessageRole.tool) {
+        // Fallback for standalone tool role message without toolName
+        if (!_isActivityCleared(msg.timestamp)) {
+          final toolName = msg.toolName ?? 'tool';
+          final cleanOut = _cleanToolOutput(msg.content);
+          activities.add(VibeActivityItem(
+            title: toolName,
+            type: 'tool',
+            detail: null,
+            output: cleanOut.isNotEmpty ? cleanOut : null,
+            timestamp: msg.timestamp,
+            isSuccess: !(msg.toolStatus == 'error'),
+          ));
+        }
       }
 
       // 3. Embedded XML Tool Calls in message content (<tool_call...> or <tool...>)
@@ -330,7 +333,7 @@ class _VibeModeViewState extends State<VibeModeView> {
       }
 
       // 4. Thought / Reasoning Process (<think>...</think> or <thinking>...</thinking>)
-      if (msg.content.contains('<think') || msg.content.contains('<thinking')) {
+      if (!_isActivityCleared(msg.timestamp) && (msg.content.contains('<think') || msg.content.contains('<thinking'))) {
         final thinkRegex = RegExp(
           r'<(?:think|thinking)>([\s\S]*?)(?:<\/(?:think|thinking)>|$)',
           caseSensitive: false,
@@ -370,16 +373,18 @@ class _VibeModeViewState extends State<VibeModeView> {
 
           // If it's a bash/shell command block, add to terminal activity
           if (lang == 'bash' || lang == 'sh' || lang == 'shell' || lang == 'cmd' || lang == 'powershell' || lang == 'zsh') {
-            final lines = code.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty && !l.startsWith('#')).toList();
-            for (final cmdLine in lines) {
-              activities.add(VibeActivityItem(
-                title: cmdLine.startsWith('\$') ? cmdLine : '\$ $cmdLine',
-                type: 'command',
-                detail: 'Shell command from assistant',
-                output: null,
-                timestamp: msg.timestamp,
-                isSuccess: true,
-              ));
+            if (!_isActivityCleared(msg.timestamp)) {
+              final lines = code.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty && !l.startsWith('#')).toList();
+              for (final cmdLine in lines) {
+                activities.add(VibeActivityItem(
+                  title: 'terminal',
+                  type: 'command',
+                  detail: cmdLine.startsWith('\$') ? cmdLine : '\$ $cmdLine',
+                  output: null,
+                  timestamp: msg.timestamp,
+                  isSuccess: true,
+                ));
+              }
             }
             continue;
           }
@@ -431,6 +436,60 @@ class _VibeModeViewState extends State<VibeModeView> {
     });
   }
 
+  String _cleanToolInput(String name, String input) {
+    if (input.trim().isEmpty) return '';
+    try {
+      final decoded = jsonDecode(input);
+      if (decoded is Map) {
+        if (decoded.containsKey('CommandLine') && decoded['CommandLine'] != null) {
+          final cmd = decoded['CommandLine'].toString().trim();
+          return cmd.startsWith('\$') ? cmd : '\$ $cmd';
+        }
+        if (decoded.containsKey('command') && decoded['command'] != null) {
+          final cmd = decoded['command'].toString().trim();
+          return cmd.startsWith('\$') ? cmd : '\$ $cmd';
+        }
+        if (decoded.containsKey('cmd') && decoded['cmd'] != null) {
+          final cmd = decoded['cmd'].toString().trim();
+          return cmd.startsWith('\$') ? cmd : '\$ $cmd';
+        }
+        if (decoded.containsKey('TargetFile') && decoded['TargetFile'] != null) {
+          return decoded['TargetFile'].toString();
+        }
+        if (decoded.containsKey('path') && decoded['path'] != null) {
+          return decoded['path'].toString();
+        }
+        if (decoded.containsKey('query') && decoded['query'] != null) {
+          return decoded['query'].toString();
+        }
+        const encoder = JsonEncoder.withIndent('  ');
+        return encoder.convert(decoded);
+      }
+    } catch (_) {}
+    return input.trim();
+  }
+
+  String _cleanToolOutput(String raw) {
+    if (raw.trim().isEmpty) return '';
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map) {
+        if (decoded.containsKey('output') && decoded['output'] != null) {
+          return decoded['output'].toString();
+        }
+        if (decoded.containsKey('result') && decoded['result'] != null) {
+          return decoded['result'].toString();
+        }
+        const encoder = JsonEncoder.withIndent('  ');
+        return encoder.convert(decoded);
+      } else if (decoded is List) {
+        const encoder = JsonEncoder.withIndent('  ');
+        return encoder.convert(decoded);
+      }
+    } catch (_) {}
+    return raw;
+  }
+
   void _processToolCall({
     required String name,
     required String input,
@@ -441,6 +500,8 @@ class _VibeModeViewState extends State<VibeModeView> {
     required Map<String, VibeFileItem> filesMap,
     required List<VibeActivityItem> activities,
   }) {
+    if (_isActivityCleared(timestamp)) return;
+
     final lower = name.toLowerCase();
     final isSuccess = !(status?.toLowerCase() == 'error');
 
@@ -478,39 +539,92 @@ class _VibeModeViewState extends State<VibeModeView> {
         );
       }
 
+      final cleanDetail = extractedPath ?? _cleanToolInput(name, input);
+      final cleanOut = _cleanToolOutput(output);
+
+      final existingIdx = activities.indexWhere((a) =>
+          a.title == name &&
+          (cleanDetail.isEmpty || a.detail == cleanDetail) &&
+          (a.timestamp.difference(timestamp).abs().inSeconds < 10));
+
+      if (existingIdx != -1) {
+        final existing = activities[existingIdx];
+        activities[existingIdx] = VibeActivityItem(
+          title: existing.title,
+          type: existing.type,
+          detail: existing.detail ?? (cleanDetail.isNotEmpty ? cleanDetail : null),
+          output: cleanOut.isNotEmpty ? cleanOut : existing.output,
+          timestamp: existing.timestamp,
+          isSuccess: isSuccess && existing.isSuccess,
+        );
+        return;
+      }
+
       activities.add(VibeActivityItem(
         title: name,
-        type: 'tool',
-        detail: extractedPath ?? (input.length > 80 ? '${input.substring(0, 80)}...' : input),
-        output: output.isNotEmpty ? output : null,
+        type: 'file',
+        detail: cleanDetail.isNotEmpty ? cleanDetail : null,
+        output: cleanOut.isNotEmpty ? cleanOut : null,
         timestamp: timestamp,
         isSuccess: isSuccess,
       ));
     } else if (lower.contains('run_command') || lower.contains('bash') || lower.contains('terminal') || lower.contains('exec') || lower.contains('sh')) {
-      String cmd = input;
-      try {
-        final decoded = jsonDecode(input);
-        if (decoded is Map && decoded['CommandLine'] != null) {
-          cmd = decoded['CommandLine'].toString();
-        } else if (decoded is Map && decoded['command'] != null) {
-          cmd = decoded['command'].toString();
-        }
-      } catch (_) {}
+      final cleanCmd = _cleanToolInput(name, input);
+      final cleanOut = _cleanToolOutput(output);
+
+      final existingIdx = activities.indexWhere((a) =>
+          (a.title == name || a.type == 'command') &&
+          (cleanCmd.isEmpty || a.detail == cleanCmd) &&
+          (a.timestamp.difference(timestamp).abs().inSeconds < 10));
+
+      if (existingIdx != -1) {
+        final existing = activities[existingIdx];
+        activities[existingIdx] = VibeActivityItem(
+          title: existing.title,
+          type: 'command',
+          detail: existing.detail ?? (cleanCmd.isNotEmpty ? cleanCmd : null),
+          output: cleanOut.isNotEmpty ? cleanOut : existing.output,
+          timestamp: existing.timestamp,
+          isSuccess: isSuccess && existing.isSuccess,
+        );
+        return;
+      }
 
       activities.add(VibeActivityItem(
-        title: cmd.startsWith('\$') ? cmd : '\$ $cmd',
+        title: name,
         type: 'command',
-        detail: input.isNotEmpty ? input : null,
-        output: output.isNotEmpty ? output : null,
+        detail: cleanCmd.isNotEmpty ? cleanCmd : null,
+        output: cleanOut.isNotEmpty ? cleanOut : null,
         timestamp: timestamp,
         isSuccess: isSuccess,
       ));
     } else {
+      final cleanInput = _cleanToolInput(name, input);
+      final cleanOut = _cleanToolOutput(output);
+
+      final existingIdx = activities.indexWhere((a) =>
+          a.title == name &&
+          (cleanInput.isEmpty || a.detail == cleanInput) &&
+          (a.timestamp.difference(timestamp).abs().inSeconds < 10));
+
+      if (existingIdx != -1) {
+        final existing = activities[existingIdx];
+        activities[existingIdx] = VibeActivityItem(
+          title: existing.title,
+          type: existing.type,
+          detail: existing.detail ?? (cleanInput.isNotEmpty ? cleanInput : null),
+          output: cleanOut.isNotEmpty ? cleanOut : existing.output,
+          timestamp: existing.timestamp,
+          isSuccess: isSuccess && existing.isSuccess,
+        );
+        return;
+      }
+
       activities.add(VibeActivityItem(
         title: name,
         type: 'tool',
-        detail: input.length > 80 ? '${input.substring(0, 80)}...' : (input.isNotEmpty ? input : null),
-        output: output.isNotEmpty ? output : null,
+        detail: cleanInput.isNotEmpty ? cleanInput : null,
+        output: cleanOut.isNotEmpty ? cleanOut : null,
         timestamp: timestamp,
         isSuccess: isSuccess,
       ));
@@ -1115,6 +1229,34 @@ class _VibeModeViewState extends State<VibeModeView> {
                     ),
                   ],
                   const Spacer(),
+                  if (_isTerminalExpanded && _activities.isNotEmpty) ...[
+                    GestureDetector(
+                      onTap: () {
+                        HapticFeedback.lightImpact();
+                        setState(() {
+                          _clearedTerminalTimestamp = DateTime.now();
+                          _activities.clear();
+                          _expandedActivityIndices.clear();
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        margin: const EdgeInsets.only(right: 8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF313244),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'Clear',
+                          style: GoogleFonts.jetBrainsMono(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w600,
+                            color: const Color(0xFFBAC2DE),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
                   Icon(
                     _isTerminalExpanded
                         ? Icons.keyboard_arrow_down_rounded
@@ -1133,10 +1275,7 @@ class _VibeModeViewState extends State<VibeModeView> {
             Expanded(
               child: Container(
                 color: const Color(0xFF0F0F17),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: _activities.isEmpty
+                child: _activities.isEmpty
                     ? Center(
                         child: Text(
                           'No shell commands or tool activity recorded yet',
@@ -1162,6 +1301,10 @@ class _VibeModeViewState extends State<VibeModeView> {
                           if (isCmd) {
                             tagText = 'SH';
                             tagBg = const Color(0xFF1E66F5);
+                          } else if (item.type == 'file') {
+                            tagText = 'FILE';
+                            tagBg = const Color(0xFF04A5E5);
+                            tagFg = const Color(0xFF11111B);
                           } else if (item.type == 'prompt') {
                             tagText = 'AI';
                             tagBg = const Color(0xFFCBA6F7);
@@ -1230,17 +1373,17 @@ class _VibeModeViewState extends State<VibeModeView> {
                                 ),
                                 if (item.detail != null &&
                                     item.detail!.isNotEmpty &&
-                                    item.detail != item.title &&
-                                    !item.detail!.startsWith('\$'))
+                                    item.detail != item.title)
                                   Padding(
                                     padding: const EdgeInsets.only(top: 2, left: 4),
                                     child: Text(
                                       item.detail!,
-                                      maxLines: 2,
-                                      overflow: TextOverflow.ellipsis,
+                                      maxLines: isExpanded ? null : 3,
+                                      overflow: isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
                                       style: GoogleFonts.jetBrainsMono(
                                         fontSize: 10,
-                                        color: const Color(0xFF7F849C),
+                                        fontWeight: item.detail!.startsWith('\$') ? FontWeight.w600 : FontWeight.w400,
+                                        color: item.detail!.startsWith('\$') ? const Color(0xFF89B4FA) : const Color(0xFFBAC2DE),
                                       ),
                                     ),
                                   ),
@@ -1310,359 +1453,11 @@ class _VibeModeViewState extends State<VibeModeView> {
                           );
                         },
                       ),
-                    ),
-                    // Dual Mode Switch Bar
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF11111B),
-                        border: Border(top: BorderSide(color: Color(0xFF313244), width: 0.8)),
-                      ),
-                      child: Row(
-                        children: [
-                          GestureDetector(
-                            onTap: () {
-                              HapticFeedback.selectionClick();
-                              setState(() => _terminalMode = TerminalRunMode.directCli);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: _terminalMode == TerminalRunMode.directCli
-                                    ? const Color(0xFFA6E3A1).withValues(alpha: 0.18)
-                                    : const Color(0xFF181825),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: _terminalMode == TerminalRunMode.directCli
-                                      ? const Color(0xFFA6E3A1)
-                                      : const Color(0xFF313244),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    '\$',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      color: _terminalMode == TerminalRunMode.directCli
-                                          ? const Color(0xFFA6E3A1)
-                                          : const Color(0xFF6C7086),
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w700,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 5),
-                                  Text(
-                                    'Direct CLI',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      color: _terminalMode == TerminalRunMode.directCli
-                                          ? const Color(0xFFCDD6F4)
-                                          : const Color(0xFF6C7086),
-                                      fontSize: 11,
-                                      fontWeight: _terminalMode == TerminalRunMode.directCli
-                                          ? FontWeight.w700
-                                          : FontWeight.w500,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          GestureDetector(
-                            onTap: () {
-                              HapticFeedback.selectionClick();
-                              setState(() => _terminalMode = TerminalRunMode.agentAssist);
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: _terminalMode == TerminalRunMode.agentAssist
-                                    ? const Color(0xFF89B4FA).withValues(alpha: 0.18)
-                                    : const Color(0xFF181825),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(
-                                  color: _terminalMode == TerminalRunMode.agentAssist
-                                      ? const Color(0xFF89B4FA)
-                                      : const Color(0xFF313244),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    Icons.smart_toy_rounded,
-                                    size: 13,
-                                    color: _terminalMode == TerminalRunMode.agentAssist
-                                        ? const Color(0xFF89B4FA)
-                                        : const Color(0xFF6C7086),
-                                  ),
-                                  const SizedBox(width: 5),
-                                  Text(
-                                    'Agent AI',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      color: _terminalMode == TerminalRunMode.agentAssist
-                                          ? const Color(0xFFCDD6F4)
-                                          : const Color(0xFF6C7086),
-                                      fontSize: 11,
-                                      fontWeight: _terminalMode == TerminalRunMode.agentAssist
-                                          ? FontWeight.w700
-                                          : FontWeight.w500,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const Spacer(),
-                          GestureDetector(
-                            onTap: () {
-                              HapticFeedback.lightImpact();
-                              setState(() => _activities.clear());
-                            },
-                            child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF181825),
-                                borderRadius: BorderRadius.circular(6),
-                                border: Border.all(color: const Color(0xFF313244), width: 0.8),
-                              ),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  const Icon(
-                                    Icons.cleaning_services_rounded,
-                                    size: 11,
-                                    color: Color(0xFFBAC2DE),
-                                  ),
-                                  const SizedBox(width: 4),
-                                  Text(
-                                    'Clear',
-                                    style: GoogleFonts.jetBrainsMono(
-                                      fontSize: 10,
-                                      color: const Color(0xFFBAC2DE),
-                                      fontWeight: FontWeight.w500,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    // Terminal Input Row
-                    Container(
-                      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-                      color: const Color(0xFF11111B),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 5),
-                            decoration: BoxDecoration(
-                              color: (_terminalMode == TerminalRunMode.directCli
-                                      ? const Color(0xFFA6E3A1)
-                                      : const Color(0xFF89B4FA))
-                                  .withValues(alpha: 0.15),
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: Text(
-                              _terminalMode == TerminalRunMode.directCli ? '\$' : 'AI >',
-                              style: GoogleFonts.jetBrainsMono(
-                                color: _terminalMode == TerminalRunMode.directCli
-                                    ? const Color(0xFFA6E3A1)
-                                    : const Color(0xFF89B4FA),
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Container(
-                              height: 38,
-                              padding: const EdgeInsets.symmetric(horizontal: 10),
-                              decoration: BoxDecoration(
-                                color: const Color(0xFF181825),
-                                borderRadius: BorderRadius.circular(8),
-                                border: Border.all(
-                                  color: _terminalMode == TerminalRunMode.directCli
-                                      ? const Color(0xFFA6E3A1).withValues(alpha: 0.3)
-                                      : const Color(0xFF89B4FA).withValues(alpha: 0.3),
-                                  width: 0.8,
-                                ),
-                              ),
-                              child: TextField(
-                                controller: _terminalInputCtrl,
-                                cursorColor: _terminalMode == TerminalRunMode.directCli
-                                    ? const Color(0xFFA6E3A1)
-                                    : const Color(0xFF89B4FA),
-                                style: GoogleFonts.jetBrainsMono(
-                                  color: const Color(0xFFCDD6F4),
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w500,
-                                ),
-                                decoration: InputDecoration(
-                                  filled: false,
-                                  isDense: true,
-                                  border: InputBorder.none,
-                                  enabledBorder: InputBorder.none,
-                                  focusedBorder: InputBorder.none,
-                                  contentPadding: const EdgeInsets.symmetric(vertical: 9),
-                                  hintText: _terminalMode == TerminalRunMode.directCli
-                                      ? "Run shell command (e.g. dir, git status, ping)..."
-                                      : "Ask MyPixie Agent to code, refactor, or plan...",
-                                  hintStyle: GoogleFonts.jetBrainsMono(
-                                    color: const Color(0xFF6C7086),
-                                    fontSize: 11,
-                                  ),
-                                ),
-                                onSubmitted: (cmd) => _submitTerminalCommand(cmd),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          InkWell(
-                            onTap: () => _submitTerminalCommand(_terminalInputCtrl.text),
-                            borderRadius: BorderRadius.circular(8),
-                            child: Container(
-                              width: 38,
-                              height: 38,
-                              decoration: BoxDecoration(
-                                color: _terminalMode == TerminalRunMode.directCli
-                                    ? const Color(0xFF1E66F5)
-                                    : const Color(0xFF89B4FA),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Center(
-                                child: Icon(
-                                  _terminalMode == TerminalRunMode.directCli
-                                      ? Icons.play_arrow_rounded
-                                      : Icons.send_rounded,
-                                  color: _terminalMode == TerminalRunMode.directCli
-                                      ? Colors.white
-                                      : const Color(0xFF11111B),
-                                  size: 19,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
               ),
             ),
         ],
       ),
     );
-  }
-
-  void _submitTerminalCommand(String cmd) {
-    final clean = cmd.trim();
-    if (clean.isEmpty) return;
-    _terminalInputCtrl.clear();
-    HapticFeedback.lightImpact();
-
-    // 1. Built-in interactive terminal commands
-    final lower = clean.toLowerCase();
-    if (lower == 'clear' || lower == 'cls') {
-      setState(() => _activities.clear());
-      return;
-    }
-
-    if (lower == 'help') {
-      setState(() {
-        _activities.insert(0, VibeActivityItem(
-          title: 'MyPixie Dual Mode Terminal',
-          type: 'info',
-          detail: 'Available interactive commands',
-          output: 'Modes:\n'
-              '  - Direct CLI: Runs shell commands via terminal execution tool\n'
-              '  - Agent AI: Sends conversational prompts & tasks to MyPixie agent\n\n'
-              'Built-in shortcuts:\n'
-              '  clear / cls     Clear terminal screen\n'
-              '  mode cli        Switch to Direct CLI mode\n'
-              '  mode agent      Switch to Agent AI mode\n'
-              '  help            Show this help reference',
-          timestamp: DateTime.now(),
-          isSuccess: true,
-        ));
-      });
-      return;
-    }
-
-    if (lower == 'mode cli' || lower == 'mode direct') {
-      setState(() {
-        _terminalMode = TerminalRunMode.directCli;
-        _activities.insert(0, VibeActivityItem(
-          title: 'Switched to Direct CLI Mode',
-          type: 'info',
-          detail: 'Commands will be executed as raw shell commands',
-          output: null,
-          timestamp: DateTime.now(),
-          isSuccess: true,
-        ));
-      });
-      return;
-    }
-
-    if (lower == 'mode agent' || lower == 'mode ai') {
-      setState(() {
-        _terminalMode = TerminalRunMode.agentAssist;
-        _activities.insert(0, VibeActivityItem(
-          title: 'Switched to Agent AI Mode',
-          type: 'info',
-          detail: 'Input will be processed as agent prompt instructions',
-          output: null,
-          timestamp: DateTime.now(),
-          isSuccess: true,
-        ));
-      });
-      return;
-    }
-
-    // 2. Dispatch based on active mode
-    if (_terminalMode == TerminalRunMode.directCli) {
-      final newActivity = VibeActivityItem(
-        title: '\$ $clean',
-        type: 'command',
-        detail: 'Executing shell command...',
-        output: null,
-        timestamp: DateTime.now(),
-        isSuccess: true,
-      );
-
-      setState(() {
-        _activities.insert(0, newActivity);
-      });
-
-      if (widget.onQuickPrompt != null) {
-        widget.onQuickPrompt!(
-          "Execute this exact terminal command using the terminal tool now. Output ONLY the raw stdout and stderr without conversational explanation:\n$clean"
-        );
-      }
-    } else {
-      final newActivity = VibeActivityItem(
-        title: 'AI: $clean',
-        type: 'prompt',
-        detail: 'Instruction sent to MyPixie Agent...',
-        output: null,
-        timestamp: DateTime.now(),
-        isSuccess: true,
-      );
-
-      setState(() {
-        _activities.insert(0, newActivity);
-      });
-
-      if (widget.onQuickPrompt != null) {
-        widget.onQuickPrompt!(clean);
-      }
-    }
   }
 
   void _showDirectoryExplorer(BuildContext context) {

@@ -246,11 +246,14 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           trimmedText,
           sessionId: targetSession.startsWith('temp_') ? null : targetSession,
         );
+        final formatted = out.isNotEmpty
+            ? "**Command:** `$trimmedText`\n\n```text\n$out\n```"
+            : "**Command:** `$trimmedText`\n\n*(Command executed with no output)*";
         final current = _sessionCache[targetSession] ?? state;
         final nextList = [
           for (final m in current)
             if (m.id == assistantId)
-              m.copyWith(content: out.isNotEmpty ? out : "(command executed)", isStreaming: false)
+              m.copyWith(content: formatted, isStreaming: false)
             else
               m,
         ];
@@ -384,14 +387,40 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         return;
       }
 
+      // 1. Pre-index all tool_calls from assistant messages
+      final Map<String, Map<String, String>> toolCallsLookup = {};
+      final List<Map<String, String>> orderedToolCalls = [];
+
+      for (final item in rawList) {
+        final toolCalls = item['tool_calls'] ?? item['toolCalls'] ?? item['function_calls'];
+        if (toolCalls is List) {
+          for (final tc in toolCalls) {
+            if (tc is Map) {
+              final id = tc['id']?.toString() ?? tc['tool_call_id']?.toString() ?? tc['call_id']?.toString();
+              final fn = tc['function'] is Map ? (tc['function'] as Map) : tc;
+              final name = fn['name']?.toString() ?? fn['tool']?.toString() ?? 'tool';
+              final args = fn['arguments']?.toString() ?? (fn['input'] != null ? jsonEncode(fn['input']) : '');
+              final info = {'name': name, 'input': args};
+              if (id != null && id.isNotEmpty) {
+                toolCallsLookup[id] = info;
+              }
+              orderedToolCalls.add(info);
+            }
+          }
+        }
+      }
+
       final List<ChatMessage> loaded = [];
+      int toolCallCursor = 0;
+
       for (final item in rawList) {
         final roleStr = item['role']?.toString().toLowerCase() ?? 'user';
+        final isToolMsg = roleStr == 'tool';
         final role = roleStr == 'assistant'
             ? MessageRole.assistant
             : (roleStr == 'system'
                 ? MessageRole.system
-                : (roleStr == 'tool'
+                : (isToolMsg
                     ? MessageRole.tool
                     : MessageRole.user));
 
@@ -404,24 +433,45 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
           ts = DateTime.tryParse(tsRaw.toString()) ?? DateTime.now();
         }
 
+        final callId = item['tool_call_id']?.toString() ?? item['call_id']?.toString() ?? item['tool_id']?.toString();
+        Map<String, String>? matchingCall = callId != null ? toolCallsLookup[callId] : null;
+        if (matchingCall == null && isToolMsg && toolCallCursor < orderedToolCalls.length) {
+          matchingCall = orderedToolCalls[toolCallCursor++];
+        }
+
         final toolName = item['tool_name']?.toString() ??
             item['toolName']?.toString() ??
             item['tool']?.toString() ??
-            item['name']?.toString();
+            item['name']?.toString() ??
+            matchingCall?['name'];
         final toolStatus = item['tool_status']?.toString() ?? item['status']?.toString();
         final toolInput = item['tool_input']?.toString() ??
             item['toolInput']?.toString() ??
             item['arguments']?.toString() ??
-            (item['input'] != null ? jsonEncode(item['input']) : null);
+            (item['input'] != null ? jsonEncode(item['input']) : null) ??
+            matchingCall?['input'];
         final toolOutput = item['tool_output']?.toString() ??
             item['toolOutput']?.toString() ??
             item['output']?.toString() ??
-            item['result']?.toString();
+            item['result']?.toString() ??
+            (isToolMsg ? content : null);
+
+        // If it's an assistant message with empty text and has tool_calls,
+        // skip it so it does not create a redundant/duplicate bubble with the tool message below it
+        if (role == MessageRole.assistant && content.trim().isEmpty) {
+          final hasToolCalls = (item['tool_calls'] is List && (item['tool_calls'] as List).isNotEmpty) ||
+              (item['toolCalls'] is List && (item['toolCalls'] as List).isNotEmpty);
+          if (hasToolCalls) {
+            continue;
+          }
+        }
+
+        final messageContent = content;
 
         loaded.add(ChatMessage(
           id: item['id']?.toString() ?? item['message_uid']?.toString() ?? const Uuid().v4(),
           role: role,
-          content: content,
+          content: messageContent,
           timestamp: ts,
           toolName: toolName,
           toolStatus: toolStatus,

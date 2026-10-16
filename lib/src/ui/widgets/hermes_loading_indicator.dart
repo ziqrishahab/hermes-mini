@@ -7,12 +7,16 @@ class HermesLoadingIndicator extends StatefulWidget {
   final double width;
   final double height;
   final String? statusText;
+  final Color? trackColor;
+  final Color? textColor;
 
   const HermesLoadingIndicator({
     super.key,
     this.width = 140,
     this.height = 5,
     this.statusText,
+    this.trackColor,
+    this.textColor,
   });
 
   @override
@@ -54,7 +58,7 @@ class _HermesLoadingIndicatorState extends State<HermesLoadingIndicator>
           width: widget.width,
           height: widget.height,
           decoration: BoxDecoration(
-            color: HermesTokens.bgTertiary,
+            color: widget.trackColor ?? HermesTokens.bgTertiary,
             borderRadius: BorderRadius.circular(widget.height),
             boxShadow: const [
               BoxShadow(
@@ -114,10 +118,10 @@ class _HermesLoadingIndicatorState extends State<HermesLoadingIndicator>
           const SizedBox(height: 10),
           Text(
             widget.statusText!,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w500,
-              color: HermesTokens.textMuted,
+              color: widget.textColor ?? HermesTokens.textMuted,
               letterSpacing: 0.4,
             ),
           ),

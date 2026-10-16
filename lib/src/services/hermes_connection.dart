@@ -196,6 +196,10 @@ abstract class HermesConnection {
   Future<bool> uninstallMcpServer(String name) async => false;
   Future<bool> setMcpServerEnabled(String name, bool enabled) async => false;
   Future<List<Map<String, dynamic>>> getPlugins() async => [];
+  Future<List<Map<String, dynamic>>> getPluginCatalog() async => [];
+  Future<bool> installPlugin(String name) async => false;
+  Future<bool> setPluginEnabled(String name, bool enabled) async => false;
+  Future<bool> uninstallPlugin(String name) async => false;
   Future<Map<String, dynamic>?> getPluginApi(String pluginName, String path) async => null;
   Future<String> executeSlashCommand(String command, {String? sessionId}) async => '';
 

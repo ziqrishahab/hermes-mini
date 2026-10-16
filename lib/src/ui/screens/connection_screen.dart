@@ -6,6 +6,7 @@ import '../../models/connection_config.dart';
 import '../../providers/connection_provider.dart';
 import '../../theme.dart';
 import '../widgets/tactile_feedback.dart';
+import '../widgets/hermes_setup_guide.dart';
 
 class ConnectionScreen extends ConsumerStatefulWidget {
   const ConnectionScreen({super.key});
@@ -108,22 +109,21 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                   // Logo Container (Neumorphic Raised with Hermes Asset)
                   Center(
                     child: Container(
-                      width: 76,
-                      height: 76,
+                      width: 110,
+                      height: 110,
                       decoration: NeumorphicDecoration.circle(
-                        distance: 5,
-                        blur: 10,
+                        distance: 6,
+                        blur: 14,
                       ),
-                      child: ClipOval(
-                        child: Image.asset(
-                          'assets/icons/hermes_logo.png',
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => const Center(
-                            child: Icon(
-                              Icons.auto_awesome_rounded,
-                              size: 36,
-                              color: HermesTokens.accent,
-                            ),
+                      padding: const EdgeInsets.all(14),
+                      child: Image.asset(
+                        'assets/icons/pixie_transparent.png',
+                        fit: BoxFit.contain,
+                        errorBuilder: (_, _, _) => const Center(
+                          child: Icon(
+                            Icons.auto_awesome_rounded,
+                            size: 42,
+                            color: HermesTokens.accent,
                           ),
                         ),
                       ),
@@ -241,47 +241,7 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                             decoration: NeumorphicDecoration.recessed(
                               radius: 12,
                             ),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  "1. Local Network",
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: HermesTokens.textPrimary,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                const Text(
-                                  "Run on host: hermes dashboard --host 0.0.0.0\n"
-                                  "Ensure phone and host share the same Wi-Fi. Enter host local IP, e.g. http://<host-ip>:9119.",
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: HermesTokens.textMuted,
-                                    height: 1.4,
-                                  ),
-                                ),
-                                const SizedBox(height: 8),
-                                const Text(
-                                  "2. Remote Access",
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: HermesTokens.textPrimary,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                const Text(
-                                  "Use Tailscale (http://100.x.y.z:9119) or Cloudflare Tunnel (https://your-domain.com).",
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    color: HermesTokens.textMuted,
-                                    height: 1.4,
-                                  ),
-                                ),
-                              ],
-                            ),
+                            child: const HermesSetupGuide(),
                           ),
                         ],
 

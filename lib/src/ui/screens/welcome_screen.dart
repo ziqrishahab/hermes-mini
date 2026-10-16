@@ -3,6 +3,7 @@ import "package:flutter/services.dart";
 import "package:go_router/go_router.dart";
 
 import "../../theme.dart";
+import "../widgets/hermes_setup_guide.dart";
 
 class WelcomeScreen extends StatefulWidget {
   const WelcomeScreen({super.key});
@@ -101,31 +102,9 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                   color: HermesTokens.textPrimary,
                 ),
               ),
-              const SizedBox(height: 8),
-              const Text(
-                "Run the dashboard command on your server or PC terminal to start the mobile gateway:",
-                style: TextStyle(
-                  fontSize: 12,
-                  color: HermesTokens.textMuted,
-                  height: 1.5,
-                ),
-              ),
-              const SizedBox(height: 14),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: NeumorphicDecoration.recessed(radius: 12),
-                child: const SelectableText(
-                  "hermes dashboard --host 0.0.0.0 --port 9119",
-                  style: TextStyle(
-                    fontFamily: "monospace",
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: HermesTokens.accent,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 12),
+              const HermesSetupGuide(),
+              const SizedBox(height: 18),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
@@ -185,21 +164,19 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                           );
                         },
                         child: Container(
-                          width: 84,
-                          height: 84,
+                          width: 120,
+                          height: 120,
                           decoration: NeumorphicDecoration.circle(
                             distance: 6,
-                            blur: 14,
+                            blur: 16,
                           ),
-                          child: ClipOval(
-                            child: Image.asset(
+                          padding: const EdgeInsets.all(15),
+                          child: Image.asset(
+                            'assets/icons/pixie_transparent.png',
+                            fit: BoxFit.contain,
+                            errorBuilder: (_, _, _) => Image.asset(
                               'assets/icons/hermes_logo.png',
-                              fit: BoxFit.cover,
-                              errorBuilder: (_, _, _) => const Icon(
-                                Icons.auto_awesome_rounded,
-                                size: 36,
-                                color: HermesTokens.accent,
-                              ),
+                              fit: BoxFit.contain,
                             ),
                           ),
                         ),
@@ -245,22 +222,16 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                         physics: const BouncingScrollPhysics(),
                         children: [
                           _buildFeatureCard(
-                            icon: Icons.psychology_rounded,
-                            iconColor: HermesTokens.accent,
                             title: "Autonomous Reasoning",
                             description: "Multi-turn planning, proactive decision making, and persistent memory.",
                           ),
                           const SizedBox(height: 12),
                           _buildFeatureCard(
-                            icon: Icons.terminal_rounded,
-                            iconColor: const Color(0xFF0EA5E9), // Cyan / Sky Blue
                             title: "Terminal & Sub-Shells",
                             description: "Run CLI tasks, inspect live daemon processes, and interrupt runs anytime.",
                           ),
                           const SizedBox(height: 12),
                           _buildFeatureCard(
-                            icon: Icons.hub_rounded,
-                            iconColor: const Color(0xFF10B981), // Emerald Green
                             title: "Real-Time Gateway",
                             description: "Fast JSON-RPC protocol over secure WebSockets with sub-second response.",
                           ),
@@ -347,53 +318,34 @@ class _WelcomeScreenState extends State<WelcomeScreen>
   }
 
   Widget _buildFeatureCard({
-    required IconData icon,
-    required Color iconColor,
     required String title,
     required String description,
   }) {
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: NeumorphicDecoration.raised(
         radius: 14,
         distance: 4,
         blur: 10,
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
-            width: 38,
-            height: 38,
-            decoration: BoxDecoration(
-              color: iconColor.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: HermesTokens.textPrimary,
             ),
-            child: Icon(icon, color: iconColor, size: 20),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: HermesTokens.textPrimary,
-                  ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  description,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: HermesTokens.textMuted,
-                    height: 1.4,
-                  ),
-                ),
-              ],
+          const SizedBox(height: 4),
+          Text(
+            description,
+            style: const TextStyle(
+              fontSize: 11,
+              color: HermesTokens.textMuted,
+              height: 1.4,
             ),
           ),
         ],

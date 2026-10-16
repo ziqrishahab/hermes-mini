@@ -893,20 +893,128 @@ class RemoteConnection extends HermesConnection {
 
   @override
   Future<List<Map<String, dynamic>>> getPlugins() async {
+    final Map<String, Map<String, dynamic>> combined = {};
+
+    // 1. Dashboard extensions (kanban, achievements)
     try {
       final res = await _dio.get("/api/dashboard/plugins");
       if (res.data is List) {
-        return (res.data as List).map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        for (final e in res.data) {
+          if (e is Map) {
+            final m = Map<String, dynamic>.from(e);
+            final name = m['name']?.toString() ?? '';
+            if (name.isNotEmpty) {
+              m['runtime_status'] = 'enabled';
+              m['enabled'] = true;
+              m['source'] = m['source'] ?? 'bundled';
+              combined[name.toLowerCase()] = m;
+            }
+          }
+        }
       }
     } catch (_) {}
 
+    // 2. Hub plugins (all agent plugins + orphan dashboard plugins)
     try {
-      final res = await _dio.get("/api/plugins");
-      if (res.data is List) {
+      final res = await _dio.get("/api/dashboard/plugins/hub");
+      if (res.data is Map<String, dynamic>) {
+        final list = res.data['plugins'];
+        if (list is List) {
+          for (final e in list) {
+            if (e is Map) {
+              final m = Map<String, dynamic>.from(e);
+              final name = m['name']?.toString() ?? '';
+              final key = name.toLowerCase();
+              if (name.isNotEmpty && !combined.containsKey(key)) {
+                combined[key] = m;
+              }
+            }
+          }
+        }
+        final orphans = res.data['orphan_dashboard_plugins'];
+        if (orphans is List) {
+          for (final e in orphans) {
+            if (e is Map) {
+              final m = Map<String, dynamic>.from(e);
+              final name = m['name']?.toString() ?? '';
+              final key = name.toLowerCase();
+              if (name.isNotEmpty && !combined.containsKey(key)) {
+                m['runtime_status'] = 'enabled';
+                m['enabled'] = true;
+                combined[key] = m;
+              }
+            }
+          }
+        }
+      }
+    } catch (_) {}
+
+    // 3. Fallback to /api/plugins
+    if (combined.isEmpty) {
+      try {
+        final res = await _dio.get("/api/plugins");
+        if (res.data is List) {
+          for (final e in res.data) {
+            if (e is Map) {
+              final m = Map<String, dynamic>.from(e);
+              final name = m['name']?.toString() ?? '';
+              if (name.isNotEmpty) combined[name.toLowerCase()] = m;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    return combined.values.toList();
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getPluginCatalog() async {
+    try {
+      final res = await _dio.get("/api/dashboard/plugins/catalog");
+      if (res.data is Map<String, dynamic>) {
+        final entries = res.data['entries'];
+        if (entries is List) {
+          return entries.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        }
+      } else if (res.data is List) {
         return (res.data as List).map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
       }
     } catch (_) {}
     return [];
+  }
+
+  @override
+  Future<bool> installPlugin(String name) async {
+    try {
+      final res = await _dio.post("/api/dashboard/agent-plugins/install", data: {
+        "catalog_name": name,
+      });
+      return res.statusCode == 200 || res.statusCode == 201;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> setPluginEnabled(String name, bool enabled) async {
+    try {
+      final action = enabled ? "enable" : "disable";
+      final res = await _dio.post("/api/dashboard/agent-plugins/$name/$action");
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> uninstallPlugin(String name) async {
+    try {
+      final res = await _dio.delete("/api/dashboard/agent-plugins/$name");
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
   }
 
   @override
