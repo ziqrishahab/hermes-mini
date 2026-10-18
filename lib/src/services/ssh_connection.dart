@@ -371,7 +371,7 @@ for p in providers:
   }
 
   @override
-  Future<void> setModelEnabled(String name, bool enabled) async {
+  Future<void> setModelEnabled(String name, bool enabled, {String? provider}) async {
     try {
       final escapedName = _shellEscape(name);
       final script = '''

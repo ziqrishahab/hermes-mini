@@ -34,27 +34,32 @@ class _ParsedMessage {
 
 _ParsedMessage _parseThinking(String raw) {
   String text = raw;
-  String? thinking;
+  final thinkingList = <String>[];
   bool isThinkingComplete = true;
 
   // 1. Matches completed <think>...</think> or <thinking>...</thinking>
   final completeRegex = RegExp(r'<(?:think|thinking)>([\s\S]*?)<\/(?:think|thinking)>', caseSensitive: false);
-  final match = completeRegex.firstMatch(text);
-
-  if (match != null) {
-    thinking = match.group(1)?.trim();
-    text = text.replaceFirst(completeRegex, '').trim();
-  } else {
-    // 2. Matches unclosed <think> or <thinking> while still streaming
-    final openRegex = RegExp(r'<(?:think|thinking)>([\s\S]*)$', caseSensitive: false);
-    final openMatch = openRegex.firstMatch(text);
-    if (openMatch != null) {
-      thinking = openMatch.group(1)?.trim();
-      isThinkingComplete = false;
-      text = text.substring(0, openMatch.start).trim();
+  for (final m in completeRegex.allMatches(text)) {
+    final t = m.group(1)?.trim();
+    if (t != null && t.isNotEmpty) {
+      thinkingList.add(t);
     }
   }
+  text = text.replaceAll(completeRegex, '').trim();
 
+  // 2. Matches unclosed <think> or <thinking> while still streaming
+  final openRegex = RegExp(r'<(?:think|thinking)>([\s\S]*)$', caseSensitive: false);
+  final openMatch = openRegex.firstMatch(text);
+  if (openMatch != null) {
+    final t = openMatch.group(1)?.trim();
+    if (t != null && t.isNotEmpty) {
+      thinkingList.add(t);
+    }
+    isThinkingComplete = false;
+    text = text.substring(0, openMatch.start).trim();
+  }
+
+  String? thinking = thinkingList.isNotEmpty ? thinkingList.join('\n\n') : null;
   if (thinking != null) {
     // Strip any CLI kaomoji spinner tickers (e.g. "(⊙_⊙) contemplating...", "( ˘ ͜ʖ ˘)♡ reasoning...")
     final tickerRegex = RegExp(r'[(\[（][^)\]）\n]*?[)\]）]\s*(?:contemplating|reasoning|brainstorming|reflecting|ruminating|cogitating|formulating|thinking)\.{3}\s*', caseSensitive: false);
@@ -131,6 +136,12 @@ class ChatBubble extends StatelessWidget {
     final isUser = message.role == MessageRole.user;
     final isTool = message.role == MessageRole.tool;
     final parsed = isUser ? null : _parseThinking(message.content);
+
+    // Clean any injected device capability prompt from user bubble display
+    String userDisplayContent = message.content;
+    if (isUser && userDisplayContent.contains('[DEVICE CONTROL CAPABILITY]')) {
+      userDisplayContent = userDisplayContent.split('[DEVICE CONTROL CAPABILITY]').first.trim();
+    }
 
     return Padding(
       padding: const EdgeInsets.only(bottom: HermesTokens.messageGap),
@@ -224,7 +235,7 @@ class ChatBubble extends StatelessWidget {
                       color: Colors.white,
                     ),
                     child: MarkdownBodyWidget(
-                      content: message.content,
+                      content: userDisplayContent,
                       textColor: Colors.white,
                     ),
                   )
@@ -313,7 +324,9 @@ class _ThinkingBlock extends StatefulWidget {
 class _ThinkingBlockState extends State<_ThinkingBlock> {
   bool? _isExpanded;
 
-  bool get expanded => _isExpanded ?? (widget.isStreaming || !widget.isComplete);
+  // While model is actively thinking in stream, keep open.
+  // As soon as thinking finishes and response starts, auto-collapse so UI stays clean!
+  bool get expanded => _isExpanded ?? (widget.isStreaming && !widget.isComplete);
 
   @override
   Widget build(BuildContext context) {
@@ -484,6 +497,12 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
 
   IconData _iconForTool(String name) {
     final lower = name.toLowerCase();
+    if (lower.contains('mobile') ||
+        lower.contains('device') ||
+        lower.contains('phone') ||
+        lower.contains('android')) {
+      return Icons.phone_android_rounded;
+    }
     if (lower.contains('bash') ||
         lower.contains('exec') ||
         lower.contains('cmd') ||

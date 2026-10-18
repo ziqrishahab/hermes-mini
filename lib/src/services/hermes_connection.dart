@@ -108,6 +108,13 @@ class SessionSummary {
       unread = 1;
     }
 
+    final rawSnippet = json['last_message'] ??
+        json['lastMessage'] ??
+        json['last_message_content'] ??
+        json['snippet'] ??
+        json['preview'] ??
+        '';
+
     return SessionSummary(
       id: json['id'] as String? ?? '',
       title: json['title'] as String? ?? 'Untitled Session',
@@ -115,8 +122,30 @@ class SessionSummary {
       source: json['source'] as String? ?? '',
       messageCount: json['messageCount'] as int? ?? json['message_count'] as int? ?? 0,
       model: json['model'] as String? ?? '',
-      snippet: json['snippet'] as String? ?? json['preview'] as String? ?? '',
+      snippet: rawSnippet.toString(),
       unreadCount: unread,
+    );
+  }
+
+  SessionSummary copyWith({
+    String? id,
+    String? title,
+    String? startedAt,
+    String? source,
+    int? messageCount,
+    String? model,
+    String? snippet,
+    int? unreadCount,
+  }) {
+    return SessionSummary(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      startedAt: startedAt ?? this.startedAt,
+      source: source ?? this.source,
+      messageCount: messageCount ?? this.messageCount,
+      model: model ?? this.model,
+      snippet: snippet ?? this.snippet,
+      unreadCount: unreadCount ?? this.unreadCount,
     );
   }
 
@@ -201,11 +230,22 @@ abstract class HermesConnection {
   Future<bool> setPluginEnabled(String name, bool enabled) async => false;
   Future<bool> uninstallPlugin(String name) async => false;
   Future<Map<String, dynamic>?> getPluginApi(String pluginName, String path) async => null;
+  Future<Map<String, dynamic>?> getSystemStats() async => null;
+  String? get lastPluginError => null;
   Future<String> executeSlashCommand(String command, {String? sessionId}) async => '';
 
   Future<List<ModelConfig>> getModels();
-  Future<void> setModelEnabled(String name, bool enabled);
+  Future<void> setModelEnabled(String name, bool enabled, {String? provider});
   Future<void> setModelProviderKey(String modelName, String provider, String key);
+  Future<bool> setCustomInferenceEndpoint({
+    required String baseUrl,
+    required String apiKey,
+    String? model,
+    String? provider,
+  }) async => false;
+  Future<Map<String, dynamic>> getModelInfo() async => {};
+  Future<bool> respondApproval(String choice) async => false;
+  String? get lastModelFetchError => null;
 
   Future<String> getReasoningEffort() async => 'low';
   Future<bool> setReasoningEffort(String effort) async => false;
@@ -227,6 +267,7 @@ abstract class HermesConnection {
 
   Future<Map<String, dynamic>> getSettings();
   Future<void> updateSettings(Map<String, dynamic> settings);
+  Future<void> clearLocalCache() async {}
 
   Future<Map<String, bool>> getPlatformEnabled();
   Future<void> setPlatformEnabled(String platform, bool enabled);

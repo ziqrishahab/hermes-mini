@@ -44,6 +44,12 @@ final pluginCatalogProvider = FutureProvider<List<Map<String, dynamic>>>((ref) a
   return conn.getPluginCatalog();
 });
 
+final systemStatsProvider = FutureProvider<Map<String, dynamic>?>((ref) async {
+  final conn = ref.watch(connectionProvider).valueOrNull;
+  if (conn == null) return null;
+  return conn.getSystemStats();
+});
+
 class CapabilitiesScreen extends ConsumerStatefulWidget {
   const CapabilitiesScreen({super.key});
   @override
@@ -1241,10 +1247,14 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
             "Install $name",
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
           ),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+          content: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.6,
+            ),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   desc.isNotEmpty ? desc : "Install this Model Context Protocol server onto your Hermes host.",
@@ -1293,7 +1303,8 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
               ],
             ),
           ),
-          actions: [
+        ),
+        actions: [
             TextButton(
               onPressed: () => Navigator.pop(ctx, false),
               child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
@@ -1485,11 +1496,48 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
     }
   }
 
-  Future<void> _showInstallPluginDialog(Map<String, dynamic> entry) async {
+  Future<void> _showInstallPluginDialog(Map<String, dynamic> entry, {String? hostOs}) async {
     final name = entry['name']?.toString() ?? '';
     final desc = entry['description']?.toString() ?? 'Hermes Agent Plugin';
     final repo = entry['repo']?.toString() ?? '';
     final summary = entry['capability_summary']?.toString() ?? '';
+    final maintainer = entry['maintainer']?.toString() ?? '';
+
+    final rawPlatforms = entry['platforms'];
+    final List<String> platforms = (rawPlatforms is List)
+        ? rawPlatforms.map((p) => p.toString().toLowerCase().trim()).where((p) => p.isNotEmpty).toList()
+        : [];
+
+    final caps = entry['capabilities'] as Map? ?? {};
+    final requiresEnv = (caps['requires_env'] as List?)?.map((e) => e.toString()).toList() ?? [];
+
+    bool isCompatible = true;
+    String? incompatibilityReason;
+
+    if (platforms.isNotEmpty && hostOs != null && hostOs.isNotEmpty) {
+      final h = hostOs.toLowerCase();
+      final isHostWindows = h.contains('win');
+      final isHostLinux = h.contains('linux');
+      final isHostMac = h.contains('mac') || h.contains('darwin');
+
+      final supportedNorm = platforms.map((p) {
+        if (p == 'windows' || p == 'win32') return 'win';
+        if (p == 'linux') return 'linux';
+        if (p == 'macos' || p == 'darwin') return 'mac';
+        return p;
+      }).toSet();
+
+      if (isHostWindows && !supportedNorm.contains('win')) {
+        isCompatible = false;
+        incompatibilityReason = "This plugin only supports: ${platforms.join(', ')}. The Hermes daemon is running on Windows ($hostOs), so the installation will be rejected by the host daemon.";
+      } else if (isHostLinux && !supportedNorm.contains('linux')) {
+        isCompatible = false;
+        incompatibilityReason = "This plugin only supports: ${platforms.join(', ')}. The Hermes daemon is running on Linux ($hostOs).";
+      } else if (isHostMac && !supportedNorm.contains('mac')) {
+        isCompatible = false;
+        incompatibilityReason = "This plugin only supports: ${platforms.join(', ')}. The Hermes daemon is running on macOS ($hostOs).";
+      }
+    }
 
     final ok = await showDialog<bool>(
       context: context,
@@ -1509,34 +1557,140 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
             ),
           ],
         ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(desc, style: const TextStyle(fontSize: 13, color: HermesTokens.textSecondary)),
-            if (repo.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                "Source: $repo",
-                style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted, fontFamily: 'JetBrains Mono'),
-              ),
-            ],
-            if (summary.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: HermesTokens.bgSecondary,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: HermesTokens.border),
+        content: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(ctx).size.height * 0.6,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (!isCompatible) ...[
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFEE2E2),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: const Color(0xFFF87171)),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(Icons.warning_rounded, size: 20, color: Color(0xFFDC2626)),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                "Host Platform Incompatible",
+                                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF991B1B)),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                incompatibilityReason ?? "This plugin is not compatible with the host operating system.",
+                                style: const TextStyle(fontSize: 11, color: Color(0xFFB91C1C), height: 1.35),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  margin: const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: HermesTokens.bgSecondary,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: HermesTokens.border),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        "REQUIREMENTS",
+                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.5, color: HermesTokens.textMuted),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text("Platform: ", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textSecondary)),
+                          Expanded(
+                            child: Text(
+                              platforms.isNotEmpty ? platforms.map((p) => p.toUpperCase()).join(', ') : "All platforms (Cross-platform)",
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w600,
+                                color: isCompatible ? HermesTokens.textPrimary : const Color(0xFFDC2626),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (requiresEnv.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text("Env Vars: ", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textSecondary)),
+                            Expanded(
+                              child: Text(
+                                requiresEnv.join(', '),
+                                style: const TextStyle(fontSize: 11, fontFamily: 'JetBrains Mono', color: HermesTokens.accentText),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      if (maintainer.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Row(
+                          children: [
+                            const Text("Maintainer: ", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textSecondary)),
+                            Text(
+                              maintainer,
+                              style: const TextStyle(fontSize: 11, color: HermesTokens.textSecondary),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ],
+                  ),
                 ),
-                child: Text(
-                  summary,
-                  style: const TextStyle(fontSize: 11, color: HermesTokens.textSecondary),
+                Text(
+                  desc,
+                  style: const TextStyle(fontSize: 13, color: HermesTokens.textSecondary, height: 1.4),
                 ),
-              ),
-            ],
-          ],
+                if (repo.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Text(
+                    "Source: $repo",
+                    style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted, fontFamily: 'JetBrains Mono'),
+                  ),
+                ],
+                if (summary.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: HermesTokens.bgSecondary,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: HermesTokens.border),
+                    ),
+                    child: Text(
+                      summary,
+                      style: const TextStyle(fontSize: 11, color: HermesTokens.textSecondary, height: 1.3),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
         ),
         actions: [
           TextButton(
@@ -1546,10 +1700,10 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: FilledButton.styleFrom(
-              backgroundColor: HermesTokens.accent,
+              backgroundColor: isCompatible ? HermesTokens.accent : const Color(0xFFEF4444),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
             ),
-            child: const Text("Install"),
+            child: Text(isCompatible ? "Install" : "Install Anyway"),
           ),
         ],
       ),
@@ -1577,8 +1731,16 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
         SnackBar(content: Text("Plugin '$name' installed successfully")),
       );
     } else {
+      final err = conn.lastPluginError;
+      final msg = (err != null && err.isNotEmpty)
+          ? err
+          : "Failed to install plugin '$name'";
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Failed to install plugin '$name'"), backgroundColor: HermesTokens.error),
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: HermesTokens.error,
+          duration: const Duration(seconds: 5),
+        ),
       );
     }
   }
@@ -1602,6 +1764,9 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
       },
       child: Builder(
         builder: (context) {
+          final stats = ref.watch(systemStatsProvider).valueOrNull;
+          final hostOs = (stats?['os'] ?? stats?['platform'] ?? '').toString();
+
           final isPluginsLoading = pluginsAsync.isLoading && !pluginsAsync.hasValue;
           final isCatalogLoading = catalogAsync.isLoading && !catalogAsync.hasValue;
 
@@ -1976,135 +2141,16 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
                         (context, index) {
                           final c = filteredCatalog[index];
                           final name = (c['name'] ?? 'Plugin').toString();
-                          final desc = (c['description'] ?? 'Hermes Agent Plugin').toString();
-                          final category = (c['category'] ?? '').toString();
-                          final summary = (c['capability_summary'] ?? '').toString();
                           final installed = c['installed'] as bool? ?? false;
                           final isPending = _pendingPluginOps.contains(name);
 
-                          return Container(
-                            margin: const EdgeInsets.only(bottom: 12),
-                            decoration: NeumorphicDecoration.raised(radius: 16),
-                            child: Material(
-                              color: Colors.transparent,
-                              child: InkWell(
-                                onTap: installed ? null : () => _showInstallPluginDialog(c),
-                                borderRadius: BorderRadius.circular(16),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(14),
-                                  child: Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: Column(
-                                          crossAxisAlignment: CrossAxisAlignment.start,
-                                          children: [
-                                            Row(
-                                              children: [
-                                                Flexible(
-                                                  child: Text(
-                                                    name,
-                                                    style: const TextStyle(
-                                                      fontSize: 14,
-                                                      fontWeight: FontWeight.w700,
-                                                      color: HermesTokens.textPrimary,
-                                                    ),
-                                                    overflow: TextOverflow.ellipsis,
-                                                  ),
-                                                ),
-                                                if (category.isNotEmpty) ...[
-                                                  const SizedBox(width: 8),
-                                                  Container(
-                                                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                                                    decoration: BoxDecoration(
-                                                      color: HermesTokens.bgSecondary,
-                                                      borderRadius: BorderRadius.circular(6),
-                                                      border: Border.all(color: HermesTokens.border),
-                                                    ),
-                                                    child: Text(
-                                                      _formatCategory(category),
-                                                      style: const TextStyle(
-                                                        fontSize: 9,
-                                                        color: HermesTokens.textSecondary,
-                                                        fontWeight: FontWeight.w600,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                ],
-                                              ],
-                                            ),
-                                            const SizedBox(height: 4),
-                                            ExpandableText(
-                                              text: desc,
-                                              maxLines: 3,
-                                            ),
-                                            if (summary.isNotEmpty) ...[
-                                              const SizedBox(height: 6),
-                                              ExpandableText(
-                                                text: summary,
-                                                maxLines: 2,
-                                                style: const TextStyle(
-                                                  fontSize: 10,
-                                                  color: HermesTokens.accentText,
-                                                  fontWeight: FontWeight.w500,
-                                                  height: 1.3,
-                                                ),
-                                              ),
-                                            ],
-                                          ],
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      if (isPending)
-                                        const SizedBox(
-                                          width: 24,
-                                          height: 24,
-                                          child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
-                                        )
-                                      else if (installed)
-                                        Container(
-                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                          decoration: BoxDecoration(
-                                            color: const Color(0xFF10B981).withValues(alpha: 0.12),
-                                            borderRadius: BorderRadius.circular(8),
-                                            border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
-                                          ),
-                                          child: const Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              Icon(Icons.check_circle_outline_rounded, size: 13, color: Color(0xFF059669)),
-                                              SizedBox(width: 4),
-                                              Text(
-                                                "Installed",
-                                                style: TextStyle(
-                                                  fontSize: 11,
-                                                  fontWeight: FontWeight.w600,
-                                                  color: Color(0xFF059669),
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                        )
-                                      else
-                                        FilledButton(
-                                          onPressed: () => _showInstallPluginDialog(c),
-                                          style: FilledButton.styleFrom(
-                                            backgroundColor: HermesTokens.accent,
-                                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                                            minimumSize: Size.zero,
-                                            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                          ),
-                                          child: const Text(
-                                            "Install",
-                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            ),
+                          return _CatalogPluginCard(
+                            entry: c,
+                            installed: installed,
+                            isPending: isPending,
+                            categoryFormatted: _formatCategory((c['category'] ?? '').toString()),
+                            hostOs: hostOs,
+                            onInstall: () => _showInstallPluginDialog(c, hostOs: hostOs),
                           );
                         },
                         childCount: filteredCatalog.length,
@@ -2235,6 +2281,436 @@ class _CapabilitiesScreenState extends ConsumerState<CapabilitiesScreen>
           ),
         ),
       ],
+    );
+  }
+}
+
+class _CatalogPluginCard extends StatefulWidget {
+  final Map<String, dynamic> entry;
+  final bool installed;
+  final bool isPending;
+  final String categoryFormatted;
+  final String? hostOs;
+  final VoidCallback onInstall;
+
+  const _CatalogPluginCard({
+    required this.entry,
+    required this.installed,
+    required this.isPending,
+    required this.categoryFormatted,
+    this.hostOs,
+    required this.onInstall,
+  });
+
+  @override
+  State<_CatalogPluginCard> createState() => _CatalogPluginCardState();
+}
+
+class _CatalogPluginCardState extends State<_CatalogPluginCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = widget.entry;
+    final name = (c['name'] ?? 'Plugin').toString();
+    final desc = (c['description'] ?? 'Hermes Agent Plugin').toString();
+    final summary = (c['capability_summary'] ?? '').toString();
+    final tier = (c['tier'] ?? '').toString().toLowerCase();
+    final maintainer = (c['maintainer'] ?? '').toString();
+    final repo = (c['repo'] ?? '').toString();
+    final sha = (c['sha_short'] ?? (c['sha'] != null && c['sha'].toString().length >= 7 ? c['sha'].toString().substring(0, 7) : '')).toString();
+
+    final rawPlatforms = c['platforms'];
+    final List<String> platforms = (rawPlatforms is List)
+        ? rawPlatforms.map((p) => p.toString().toLowerCase().trim()).where((p) => p.isNotEmpty).toList()
+        : [];
+
+    final caps = c['capabilities'] as Map? ?? {};
+    final tools = (caps['provides_tools'] as List?) ?? [];
+    final requiresEnv = (caps['requires_env'] as List?)?.map((e) => e.toString()).toList() ?? [];
+
+    bool isCompatible = true;
+    String? platformRequirementLabel;
+
+    if (platforms.isNotEmpty && widget.hostOs != null && widget.hostOs!.isNotEmpty) {
+      final h = widget.hostOs!.toLowerCase();
+      final isHostWindows = h.contains('win');
+      final isHostLinux = h.contains('linux');
+      final isHostMac = h.contains('mac') || h.contains('darwin');
+
+      final supportedNorm = platforms.map((p) {
+        if (p == 'windows' || p == 'win32') return 'win';
+        if (p == 'linux') return 'linux';
+        if (p == 'macos' || p == 'darwin') return 'mac';
+        return p;
+      }).toSet();
+
+      if (isHostWindows && !supportedNorm.contains('win')) {
+        isCompatible = false;
+        platformRequirementLabel = "${platforms.join(', ').toUpperCase()} ONLY (Host: Win32)";
+      } else if (isHostLinux && !supportedNorm.contains('linux')) {
+        isCompatible = false;
+        platformRequirementLabel = "Incompatible with Linux";
+      } else if (isHostMac && !supportedNorm.contains('mac')) {
+        isCompatible = false;
+        platformRequirementLabel = "Incompatible with macOS";
+      }
+    }
+
+    final hasDetails = desc.length > 90 || summary.isNotEmpty || maintainer.isNotEmpty || requiresEnv.isNotEmpty || repo.isNotEmpty;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: NeumorphicDecoration.raised(radius: 16),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: widget.installed ? null : widget.onInstall,
+          borderRadius: BorderRadius.circular(16),
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      // Header Row: Name + Tier + Category
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(
+                              name,
+                              style: const TextStyle(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w700,
+                                color: HermesTokens.textPrimary,
+                              ),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          if (tier.isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: tier == 'official'
+                                    ? const Color(0xFF10B981).withValues(alpha: 0.12)
+                                    : HermesTokens.bgSecondary,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(
+                                  color: tier == 'official'
+                                      ? const Color(0xFF10B981).withValues(alpha: 0.3)
+                                      : HermesTokens.border,
+                                ),
+                              ),
+                              child: Text(
+                                tier,
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w600,
+                                  color: tier == 'official' ? const Color(0xFF059669) : HermesTokens.textMuted,
+                                ),
+                              ),
+                            ),
+                          ],
+                          if (widget.categoryFormatted.isNotEmpty) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1.5),
+                              decoration: BoxDecoration(
+                                color: HermesTokens.bgSecondary,
+                                borderRadius: BorderRadius.circular(4),
+                                border: Border.all(color: HermesTokens.border),
+                              ),
+                              child: Text(
+                                widget.categoryFormatted,
+                                style: const TextStyle(
+                                  fontSize: 9,
+                                  color: HermesTokens.textSecondary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      // Requirements and Platform Chips Row
+                      Wrap(
+                        spacing: 5,
+                        runSpacing: 4,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          if (!isCompatible)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFEF4444).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(5),
+                                border: Border.all(color: const Color(0xFFEF4444).withValues(alpha: 0.35)),
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Icon(Icons.block_rounded, size: 10, color: Color(0xFFDC2626)),
+                                  const SizedBox(width: 3),
+                                  Text(
+                                    platformRequirementLabel ?? "REQUIRES ${platforms.join(', ').toUpperCase()}",
+                                    style: const TextStyle(
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.w700,
+                                      color: Color(0xFFDC2626),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            )
+                          else if (platforms.isNotEmpty)
+                            ...platforms.map((p) => Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: HermesTokens.bgSecondary,
+                                    borderRadius: BorderRadius.circular(5),
+                                    border: Border.all(color: HermesTokens.border),
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(
+                                        p == 'linux'
+                                            ? Icons.terminal_rounded
+                                            : (p.contains('win') ? Icons.window_rounded : Icons.laptop_mac_rounded),
+                                        size: 10,
+                                        color: HermesTokens.textMuted,
+                                      ),
+                                      const SizedBox(width: 3),
+                                      Text(
+                                        p.toUpperCase(),
+                                        style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w600, color: HermesTokens.textSecondary),
+                                      ),
+                                    ],
+                                  ),
+                                ))
+                          else
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: HermesTokens.bgSecondary,
+                                borderRadius: BorderRadius.circular(5),
+                                border: Border.all(color: HermesTokens.border),
+                              ),
+                              child: const Text(
+                                "CROSS-PLATFORM",
+                                style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w600, color: HermesTokens.textMuted),
+                              ),
+                            ),
+                          if (requiresEnv.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF59E0B).withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(5),
+                                border: Border.all(color: const Color(0xFFF59E0B).withValues(alpha: 0.3)),
+                              ),
+                              child: Text(
+                                "env: ${requiresEnv.first}${requiresEnv.length > 1 ? ' +${requiresEnv.length - 1}' : ''}",
+                                style: const TextStyle(fontSize: 8.5, fontWeight: FontWeight.w600, color: Color(0xFFD97706)),
+                              ),
+                            ),
+                          if (tools.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: HermesTokens.bgSecondary,
+                                borderRadius: BorderRadius.circular(5),
+                                border: Border.all(color: HermesTokens.border),
+                              ),
+                              child: Text(
+                                "${tools.length} tools",
+                                style: const TextStyle(fontSize: 8.5, color: HermesTokens.textMuted),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      // Paragraph 1: Description
+                      Text(
+                        desc,
+                        maxLines: _expanded ? null : 3,
+                        overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: HermesTokens.textMuted,
+                          height: 1.35,
+                        ),
+                      ),
+                      // Paragraph 2: Technical capabilities & requirements summary when expanded
+                      if (_expanded) ...[
+                        if (summary.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: HermesTokens.bgSecondary,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(color: HermesTokens.border),
+                            ),
+                            child: Text(
+                              summary,
+                              style: const TextStyle(
+                                fontSize: 10,
+                                color: HermesTokens.accentText,
+                                fontWeight: FontWeight.w500,
+                                height: 1.3,
+                              ),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 6),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(8),
+                          decoration: BoxDecoration(
+                            color: HermesTokens.bgSecondary.withValues(alpha: 0.5),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: HermesTokens.border),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (platforms.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 2),
+                                  child: Text(
+                                    "Supported OS: ${platforms.map((p) => p.toUpperCase()).join(', ')}",
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: isCompatible ? HermesTokens.textSecondary : const Color(0xFFDC2626),
+                                    ),
+                                  ),
+                                ),
+                              if (requiresEnv.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 2),
+                                  child: Text(
+                                    "Required Env: ${requiresEnv.join(', ')}",
+                                    style: const TextStyle(fontSize: 10, color: HermesTokens.textSecondary),
+                                  ),
+                                ),
+                              if (maintainer.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 2),
+                                  child: Text(
+                                    "Maintainer: $maintainer",
+                                    style: const TextStyle(fontSize: 10, color: HermesTokens.textSecondary),
+                                  ),
+                                ),
+                              if (repo.isNotEmpty)
+                                Text(
+                                  sha.isNotEmpty ? "Source: $repo ($sha)" : "Source: $repo",
+                                  style: const TextStyle(fontSize: 10, color: HermesTokens.textMuted, fontFamily: 'JetBrains Mono'),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      // Single unified "Read more" / "Show less" toggle
+                      if (hasDetails) ...[
+                        const SizedBox(height: 4),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            setState(() => _expanded = !_expanded);
+                          },
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 2, bottom: 2, right: 8),
+                            child: Text(
+                              _expanded ? "Show less" : "Read more",
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: HermesTokens.accent,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                if (widget.isPending)
+                  const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
+                  )
+                else if (widget.installed)
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF10B981).withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFF10B981).withValues(alpha: 0.3)),
+                    ),
+                    child: const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.check_circle_outline_rounded, size: 13, color: Color(0xFF059669)),
+                        SizedBox(width: 4),
+                        Text(
+                          "Installed",
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: Color(0xFF059669),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else if (!isCompatible)
+                  OutlinedButton.icon(
+                    onPressed: widget.onInstall,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: const Color(0xFFDC2626),
+                      side: const BorderSide(color: Color(0xFFF87171)),
+                      backgroundColor: const Color(0xFFFEF2F2),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    icon: const Icon(Icons.warning_amber_rounded, size: 12, color: Color(0xFFDC2626)),
+                    label: Text(
+                      platforms.isNotEmpty ? "${platforms.first} only" : "Incompatible",
+                      style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700),
+                    ),
+                  )
+                else
+                  FilledButton(
+                    onPressed: widget.onInstall,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: HermesTokens.accent,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                      minimumSize: Size.zero,
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: const Text(
+                      "Install",
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

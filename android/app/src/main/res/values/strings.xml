@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="accessibility_service_name">Hermes Mobile Agent</string>
+    <string name="accessibility_service_description">Allows Hermes AI Agent to automate actions, tap buttons, enter text, and interact with apps on your device.</string>
+</resources>

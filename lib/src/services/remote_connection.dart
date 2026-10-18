@@ -3,6 +3,7 @@ import "dart:convert";
 import "dart:io";
 import "package:flutter/foundation.dart";
 import "package:dio/dio.dart";
+import "package:shared_preferences/shared_preferences.dart";
 import "../models/connection_config.dart";
 import "hermes_connection.dart";
 class RemoteConnection extends HermesConnection {
@@ -14,13 +15,42 @@ class RemoteConnection extends HermesConnection {
   @override
   set activeSessionId(String? id) => _activeSessionId = id;
 
+  String? _customBaseUrl;
+  String? _customApiKey;
+
   String? _cookieHeader;
   String? _accessToken;
   bool _authenticated = false;
   final Map<String, WebSocket> _activeChatSockets = {};
 
+  dynamic _pendingApprovalId;
+  WebSocket? _pendingApprovalWs;
+
+  @override
+  Future<bool> respondApproval(String choice) async {
+    final ws = _pendingApprovalWs;
+    final reqId = _pendingApprovalId;
+    if (ws != null && reqId != null) {
+      try {
+        ws.add(jsonEncode({
+          "jsonrpc": "2.0",
+          "id": reqId,
+          "result": {
+            "choice": choice,
+          }
+        }));
+        _pendingApprovalId = null;
+        return true;
+      } catch (_) {}
+    }
+    return false;
+  }
+
   late final String _baseUrl;
   late final String _wsBaseUrl;
+  String? _lastModelFetchError;
+  @override
+  String? get lastModelFetchError => _lastModelFetchError;
 
   RemoteConnection(this.config) {
     var rawUrl = (config.apiUrl ?? "").trim().replaceAll(RegExp(r"/$"), "");
@@ -523,15 +553,183 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<void> setConfigValue(String path, String value) async {
+  Future<Map<String, dynamic>> getModelInfo() async {
     try {
-      String currentModel = "thinkingmachines/inkling:free";
-      String currentProvider = "openrouter";
+      final res = await _dio.get("/api/model/info");
+      if (res.data is Map<String, dynamic>) {
+        return Map<String, dynamic>.from(res.data);
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  Future<List<String>> fetchRemoteEndpointModels(String baseUrl, String apiKey) async {
+    final cleanUrl = baseUrl.trim().replaceAll(RegExp(r'/+$'), '');
+    if (cleanUrl.isEmpty) return [];
+
+    final List<String> candidates = [];
+    if (cleanUrl.endsWith('/v1')) {
+      candidates.add('$cleanUrl/models');
+      candidates.add(cleanUrl.replaceAll(RegExp(r'/v1$'), '/models'));
+    } else {
+      candidates.add('$cleanUrl/v1/models');
+      candidates.add('$cleanUrl/models');
+    }
+
+    _lastModelFetchError = null;
+    for (final endpoint in candidates) {
+      try {
+        final res = await Dio(BaseOptions(
+          connectTimeout: const Duration(seconds: 7),
+          receiveTimeout: const Duration(seconds: 10),
+        )).get(
+          endpoint,
+          options: Options(
+            headers: {
+              if (apiKey.isNotEmpty) 'Authorization': 'Bearer $apiKey',
+              'Accept': 'application/json',
+            },
+            validateStatus: (s) => (s ?? 0) < 500,
+          ),
+        );
+
+        dynamic data = res.data;
+        if (data is String) {
+          try {
+            data = jsonDecode(data);
+          } catch (_) {}
+        }
+
+        if (res.statusCode == 200) {
+          if (data is Map) {
+            final dataList = data['data'] ?? data['models'];
+            if (dataList is List && dataList.isNotEmpty) {
+              final models = <String>[];
+              for (final item in dataList) {
+                if (item is Map && item['id'] != null) {
+                  models.add(item['id'].toString());
+                } else if (item is Map && item['name'] != null) {
+                  models.add(item['name'].toString());
+                } else if (item is String) {
+                  models.add(item);
+                }
+              }
+              if (models.isNotEmpty) {
+                _lastModelFetchError = null;
+                return models;
+              }
+            }
+          } else if (data is List) {
+            final models = <String>[];
+            for (final item in data) {
+              if (item is Map && item['id'] != null) {
+                models.add(item['id'].toString());
+              } else if (item is Map && item['name'] != null) {
+                models.add(item['name'].toString());
+              } else if (item is String) {
+                models.add(item);
+              }
+            }
+            if (models.isNotEmpty) {
+              _lastModelFetchError = null;
+              return models;
+            }
+          }
+        } else {
+          if (data is Map && data['error'] != null) {
+            final err = data['error'];
+            final msg = (err is Map) ? (err['message'] ?? err.toString()) : err.toString();
+            _lastModelFetchError = msg;
+          } else if (res.statusCode == 401) {
+            _lastModelFetchError = "Authentication failed (401 Unauthorized)";
+          } else if (res.statusCode == 403) {
+            _lastModelFetchError = "Access forbidden (403 Forbidden)";
+          }
+        }
+      } catch (e) {
+        _lastModelFetchError = e.toString();
+      }
+    }
+    return [];
+  }
+
+  @override
+  Future<bool> setCustomInferenceEndpoint({
+    required String baseUrl,
+    required String apiKey,
+    String? model,
+    String? provider,
+  }) async {
+    final cleanUrl = baseUrl.trim();
+    final cleanKey = apiKey.trim();
+    _customBaseUrl = cleanUrl;
+    _customApiKey = cleanKey;
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('custom_inference_base_url', cleanUrl);
+      if (cleanKey.isNotEmpty) {
+        await prefs.setString('custom_inference_api_key', cleanKey);
+      }
+    } catch (_) {}
+
+    final fetched = await fetchRemoteEndpointModels(cleanUrl, cleanKey);
+
+    String m = model?.trim() ?? '';
+    if (m.isEmpty) {
+      if (fetched.isNotEmpty) {
+        m = fetched.contains('gpt-4o') ? 'gpt-4o' : fetched.first;
+      } else {
+        try {
+          final info = await getModelInfo();
+          m = info['model']?.toString() ?? '';
+        } catch (_) {}
+      }
+    }
+    if (m.isEmpty || m == 'hermes-agent' || m == 'thinkingmachines/inkling:free') {
+      m = fetched.isNotEmpty ? fetched.first : 'gpt-4o';
+    }
+
+    final isOpenRouter = cleanUrl.toLowerCase().contains('openrouter') ||
+        (provider?.trim().toLowerCase() == 'openrouter');
+    String prov = provider?.trim() ?? '';
+    if (prov.isEmpty || prov.toLowerCase() == 'custom' || prov.toLowerCase().startsWith('custom:')) {
+      prov = isOpenRouter ? 'openrouter' : 'custom';
+    }
+
+    try {
+      final res = await _dio.post("/api/model/set", data: {
+        "scope": "main",
+        "provider": prov,
+        "model": m,
+        if (!isOpenRouter) "base_url": cleanUrl,
+        if (cleanKey.isNotEmpty) "api_key": cleanKey,
+      });
+      if (res.statusCode == 200) return true;
+    } catch (_) {}
+
+    return false;
+  }
+
+  @override
+  Future<void> setConfigValue(String path, String value) async {
+    final cleanVal = value.trim();
+    if (cleanVal.startsWith('http://') || cleanVal.startsWith('https://')) {
+      await setCustomInferenceEndpoint(baseUrl: cleanVal, apiKey: '');
+      return;
+    }
+
+    try {
+      String currentModel = "gpt-4o";
+      String currentProvider = "custom";
       try {
         final info = await _dio.get("/api/model/info");
         if (info.data is Map<String, dynamic>) {
           currentModel = info.data['model']?.toString() ?? currentModel;
-          currentProvider = info.data['provider']?.toString() ?? currentProvider;
+          final cp = info.data['provider']?.toString();
+          if (cp != null && cp.isNotEmpty) {
+            currentProvider = cp;
+          }
         }
       } catch (_) {}
 
@@ -551,14 +749,32 @@ class RemoteConnection extends HermesConnection {
 
   @override
   Stream<String> streamChat(String message, {String? model, String? sessionId}) async* {
+    String? effectiveModel = model;
+    if (effectiveModel == null || effectiveModel.isEmpty || effectiveModel == '...' || effectiveModel == 'hermes-agent') {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final saved = prefs.getString('active_selected_model');
+        if (saved != null && saved.isNotEmpty) {
+          effectiveModel = saved;
+        }
+      } catch (_) {}
+    }
+
     // 1. Try official Hermes Gateway JSON-RPC WebSocket
     final targetSession = (sessionId != null && sessionId.isNotEmpty) ? sessionId : _activeSessionId;
     final controller = StreamController<String>();
     WebSocket? ws;
+    Timer? pingTimer;
 
     try {
       if (!_authenticated) {
         await authenticate();
+      }
+
+      if (effectiveModel != null && effectiveModel.isNotEmpty) {
+        try {
+          await setModelEnabled(effectiveModel, true);
+        } catch (_) {}
       }
 
       String? wsTicket;
@@ -575,15 +791,18 @@ class RemoteConnection extends HermesConnection {
 
       final String wsUri;
       if (wsTicket != null && wsTicket.isNotEmpty) {
-        wsUri = '$_wsBaseUrl?ticket=$wsTicket';
+        wsUri = '$_wsBaseUrl?ticket=${Uri.encodeQueryComponent(wsTicket)}';
       } else {
         final token = _accessToken ?? config.apiKey ?? '';
-        wsUri = '$_wsBaseUrl?token=$token';
+        wsUri = '$_wsBaseUrl?token=${Uri.encodeQueryComponent(token)}';
       }
 
       final wsHeaders = <String, dynamic>{};
       if (_cookieHeader != null) wsHeaders['Cookie'] = _cookieHeader;
-      if (_accessToken != null) wsHeaders['Authorization'] = 'Bearer $_accessToken';
+      final effectiveToken = _accessToken ?? config.apiKey;
+      if (effectiveToken != null && effectiveToken.isNotEmpty) {
+        wsHeaders['Authorization'] = 'Bearer $effectiveToken';
+      }
 
       ws = await WebSocket.connect(
         wsUri,
@@ -593,8 +812,33 @@ class RemoteConnection extends HermesConnection {
       if (targetSession != null) {
         _activeChatSockets[targetSession] = ws;
       }
+
+      // Advertise server_requests capability to Hermes daemon
+      ws.add(jsonEncode({
+        "jsonrpc": "2.0",
+        "id": 999,
+        "method": "client.capabilities",
+        "params": {
+          "server_requests": true,
+        },
+      }));
+
+      pingTimer = Timer.periodic(const Duration(seconds: 25), (timer) {
+        try {
+          ws?.add(jsonEncode({
+            "jsonrpc": "2.0",
+            "id": 888,
+            "method": "gateway.ping",
+            "params": {},
+          }));
+        } catch (_) {
+          timer.cancel();
+        }
+      });
+
       String? liveSessionId;
       bool hasActiveThinking = false;
+      bool hasReceivedDeltas = false;
 
       final sub = ws.listen(
         (data) {
@@ -604,6 +848,21 @@ class RemoteConnection extends HermesConnection {
             final result = parsed['result'];
             final params = parsed['params'];
             final method = parsed['method'];
+
+            // Handle server->client approval request (method: approval)
+            if (method == 'approval' && id != null) {
+              _pendingApprovalId = id;
+              _pendingApprovalWs = ws;
+              final p = (params as Map<String, dynamic>?) ?? {};
+              final cmd = p['command']?.toString() ?? p['description']?.toString() ?? 'Command';
+              controller.add('\n\n[Action Requires Operator Approval]\nCommand: `$cmd`\n');
+              return;
+            }
+
+            if (method == 'request.cancel') {
+              _pendingApprovalId = null;
+              _pendingApprovalWs = null;
+            }
 
             // Handle session.resume response (id: 1000)
             if (id == 1000 && result is Map<String, dynamic>) {
@@ -646,6 +905,7 @@ class RemoteConnection extends HermesConnection {
               if (type == 'reasoning.delta' && payload is Map<String, dynamic>) {
                 final text = payload['text']?.toString() ?? '';
                 if (text.isNotEmpty) {
+                  hasReceivedDeltas = true;
                   if (!hasActiveThinking) {
                     hasActiveThinking = true;
                     controller.add('<think>$text');
@@ -653,9 +913,25 @@ class RemoteConnection extends HermesConnection {
                     controller.add(text);
                   }
                 }
+              } else if ((type == 'tool.start' || type == 'tool.started' || type == 'tool.call') && payload is Map<String, dynamic>) {
+                hasReceivedDeltas = true;
+                if (hasActiveThinking) {
+                  hasActiveThinking = false;
+                  controller.add('</think>\n');
+                }
+                final toolName = payload['name']?.toString() ?? payload['tool']?.toString() ?? 'tool';
+                final args = payload['args'] ?? payload['arguments'] ?? payload['input'] ?? payload['context'];
+                final argsStr = (args is Map || args is List) ? jsonEncode(args) : (args?.toString() ?? '');
+                controller.add('\n<tool_call name="$toolName">\n<arguments>$argsStr</arguments>\n');
+              } else if ((type == 'tool.complete' || type == 'tool.finish' || type == 'tool.output') && payload is Map<String, dynamic>) {
+                hasReceivedDeltas = true;
+                final result = payload['result'] ?? payload['output'] ?? payload['response'] ?? payload['error'] ?? '';
+                final resultStr = (result is Map || result is List) ? jsonEncode(result) : result.toString();
+                controller.add('<output>$resultStr</output>\n</tool_call>\n\n');
               } else if ((type == 'message.delta' || type == 'content.delta') && payload is Map<String, dynamic>) {
                 final text = payload['text']?.toString() ?? payload['delta']?.toString() ?? '';
                 if (text.isNotEmpty) {
+                  hasReceivedDeltas = true;
                   if (hasActiveThinking) {
                     hasActiveThinking = false;
                     controller.add('</think>\n$text');
@@ -668,13 +944,32 @@ class RemoteConnection extends HermesConnection {
                   hasActiveThinking = false;
                   controller.add('</think>\n');
                 }
+                if (payload is Map<String, dynamic>) {
+                  final status = payload['status']?.toString();
+                  final cause = payload['cause']?.toString() ?? payload['error']?.toString();
+                  final failureReason = payload['failure_reason']?.toString();
+                  if (status == 'error' || (cause != null && cause.isNotEmpty)) {
+                    final err = cause ?? failureReason ?? 'Model inference failed';
+                    if (!controller.isClosed) {
+                      controller.add('Error: $err');
+                      controller.close();
+                      return;
+                    }
+                  }
+                  final fullText = payload['text']?.toString() ?? payload['content']?.toString() ?? payload['message']?.toString();
+                  if (!hasReceivedDeltas && fullText != null && fullText.isNotEmpty) {
+                    controller.add(fullText);
+                  }
+                }
                 if (!controller.isClosed) {
                   controller.close();
                 }
               } else if (type == 'turn.error' || type == 'error') {
-                final errText = payload?.toString() ?? 'Turn error';
+                final errText = (payload is Map)
+                    ? (payload['cause'] ?? payload['message'] ?? payload['error'] ?? payload.toString()).toString()
+                    : (payload?.toString() ?? 'Turn error');
                 if (!controller.isClosed) {
-                  controller.addError(Exception(errText));
+                  controller.add('Error: $errText');
                   controller.close();
                 }
               }
@@ -742,6 +1037,7 @@ class RemoteConnection extends HermesConnection {
       }
       rethrow;
     } finally {
+      pingTimer?.cancel();
       if (targetSession != null) {
         _activeChatSockets.remove(targetSession);
       }
@@ -984,14 +1280,43 @@ class RemoteConnection extends HermesConnection {
     return [];
   }
 
+  String? _lastPluginError;
+  @override
+  String? get lastPluginError => _lastPluginError;
+
+  @override
+  Future<Map<String, dynamic>?> getSystemStats() async {
+    try {
+      final res = await _dio.get("/api/system/stats");
+      if (res.data is Map<String, dynamic>) {
+        return res.data;
+      } else if (res.data is Map) {
+        return Map<String, dynamic>.from(res.data);
+      }
+    } catch (_) {}
+    return null;
+  }
+
   @override
   Future<bool> installPlugin(String name) async {
+    _lastPluginError = null;
     try {
       final res = await _dio.post("/api/dashboard/agent-plugins/install", data: {
         "catalog_name": name,
       });
       return res.statusCode == 200 || res.statusCode == 201;
-    } catch (_) {
+    } on DioException catch (e) {
+      final data = e.response?.data;
+      if (data is Map && data['detail'] != null) {
+        _lastPluginError = data['detail'].toString();
+      } else if (data is Map && data['error'] != null) {
+        _lastPluginError = data['error'].toString();
+      } else if (e.message != null && e.message!.isNotEmpty) {
+        _lastPluginError = e.message;
+      }
+      return false;
+    } catch (e) {
+      _lastPluginError = e.toString();
       return false;
     }
   }
@@ -1036,40 +1361,155 @@ class RemoteConnection extends HermesConnection {
   // -- Models --
   @override
   Future<List<ModelConfig>> getModels() async {
+    String currentModel = '';
+    String currentProvider = '';
+    String customBaseUrl = _customBaseUrl ?? '';
+    String customApiKey = _customApiKey ?? '';
+
+    if (customBaseUrl.isEmpty || customApiKey.isEmpty) {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        if (customBaseUrl.isEmpty) {
+          customBaseUrl = prefs.getString('custom_inference_base_url') ?? '';
+        }
+        if (customApiKey.isEmpty) {
+          customApiKey = prefs.getString('custom_inference_api_key') ?? '';
+        }
+      } catch (_) {}
+    }
+
+    try {
+      final info = await _dio.get("/api/model/info");
+      if (info.data is Map<String, dynamic>) {
+        currentModel = info.data['model']?.toString() ?? '';
+        currentProvider = info.data['provider']?.toString() ?? '';
+        final bUrl = info.data['base_url']?.toString() ?? '';
+        if (bUrl.isNotEmpty) customBaseUrl = bUrl;
+      }
+    } catch (_) {}
+
+    if (customBaseUrl.isEmpty || customApiKey.isEmpty) {
+      try {
+        final env = await readEnv();
+        if (customBaseUrl.isEmpty) {
+          customBaseUrl = env['CUSTOM_BASE_URL'] ?? env['DEEPSEEK_BASE_URL'] ?? env['OPENAI_BASE_URL'] ?? '';
+        }
+        if (customApiKey.isEmpty) {
+          customApiKey = env['CUSTOM_API_KEY'] ?? env['DEEPSEEK_API_KEY'] ?? env['OPENAI_API_KEY'] ?? '';
+        }
+      } catch (_) {}
+    }
+
+    String selectedModel = '';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      selectedModel = prefs.getString('active_selected_model') ?? '';
+    } catch (_) {}
+    if (selectedModel.isEmpty) {
+      selectedModel = currentModel;
+    }
+
+    final isCustom = currentProvider.toLowerCase() == 'custom' ||
+        currentProvider.toLowerCase().startsWith('custom:') ||
+        customBaseUrl.isNotEmpty;
+
+    // 1. If using custom provider (e.g. self-hosted, local, or any OpenAI-compatible API), fetch its models dynamically
+    if (isCustom && customBaseUrl.isNotEmpty) {
+      final fetchedIds = await fetchRemoteEndpointModels(customBaseUrl, customApiKey);
+      String displayProvider;
+      final lowerUrl = customBaseUrl.toLowerCase();
+      if (lowerUrl.contains('openrouter')) {
+        displayProvider = 'OpenRouter';
+      } else if (lowerUrl.contains('localhost') || lowerUrl.contains('127.0.0.1')) {
+        displayProvider = 'Local Server';
+      } else {
+        try {
+          final uri = Uri.parse(customBaseUrl);
+          final host = uri.host.isNotEmpty ? uri.host : 'Custom';
+          final isIp = RegExp(r'^\d+\.\d+\.\d+\.\d+$').hasMatch(host);
+          if (isIp) {
+            displayProvider = 'Local/Network Server';
+          } else {
+            final parts = host.split('.');
+            if (parts.length >= 2) {
+              final mainPart = (parts.length > 2 && (parts[0] == 'api' || parts[0] == 'ai' || parts[0] == 'www'))
+                  ? parts[1]
+                  : parts[parts.length - 2];
+              displayProvider = mainPart.isNotEmpty
+                  ? (mainPart[0].toUpperCase() + mainPart.substring(1))
+                  : host;
+            } else {
+              displayProvider = host;
+            }
+          }
+        } catch (_) {
+          displayProvider = 'Custom';
+        }
+      }
+
+      if (fetchedIds.isNotEmpty) {
+        final List<ModelConfig> customModels = [];
+        final hasMatch = fetchedIds.contains(selectedModel);
+        for (final id in fetchedIds) {
+          customModels.add(ModelConfig(
+            name: id,
+            provider: displayProvider,
+            model: id,
+            baseUrl: customBaseUrl,
+            enabled: hasMatch ? (id == selectedModel) : (id == currentModel || (currentModel.isEmpty && id == fetchedIds.first)),
+          ));
+        }
+        return customModels;
+      }
+
+      // If fetch failed with an error, do NOT show a ghost model from another provider
+      if (_lastModelFetchError != null && _lastModelFetchError!.isNotEmpty) {
+        return [];
+      }
+
+      return [];
+    }
+
+    // 2. If using standard aggregator (e.g. OpenRouter), fetch only that provider's models
     try {
       final res = await _dio.get("/api/model/options");
       if (res.data is Map<String, dynamic>) {
-        final currentModel = res.data['model'] as String? ?? 'hermes-agent';
-        final currentProvider = res.data['provider'] as String? ?? 'openrouter';
+        final optModel = res.data['model'] as String? ?? currentModel;
+        final optProvider = res.data['provider'] as String? ?? (currentProvider.isNotEmpty ? currentProvider : 'openrouter');
         final providers = (res.data['providers'] as List<dynamic>?) ?? [];
         final List<ModelConfig> result = [];
+
         for (final p in providers) {
           if (p is Map<String, dynamic>) {
-            final pName = p['name'] as String? ?? p['slug'] as String? ?? 'openrouter';
-            final rawModels = p['models'];
-            final List<String> modelNames = [];
-            if (rawModels is List) {
-              modelNames.addAll(rawModels.map((e) => e.toString()));
-            } else if (rawModels is String) {
-              modelNames.addAll(rawModels.split(RegExp(r'\s+')).where((s) => s.isNotEmpty));
-            }
-            for (final m in modelNames) {
-              result.add(ModelConfig(
-                name: m,
-                provider: pName,
-                model: m,
-                baseUrl: '',
-                enabled: m == currentModel,
-              ));
+            final pSlug = (p['slug'] as String? ?? p['name'] as String? ?? '').toLowerCase();
+            final isCurrent = p['is_current'] == true || pSlug == optProvider.toLowerCase();
+            if (isCurrent) {
+              final rawModels = p['models'];
+              final List<String> modelNames = [];
+              if (rawModels is List) {
+                modelNames.addAll(rawModels.map((e) => e.toString()));
+              } else if (rawModels is String) {
+                modelNames.addAll(rawModels.split(RegExp(r'\s+')).where((s) => s.isNotEmpty));
+              }
+              for (final m in modelNames) {
+                result.add(ModelConfig(
+                  name: m,
+                  provider: p['name'] as String? ?? p['slug'] as String? ?? optProvider,
+                  model: m,
+                  baseUrl: '',
+                  enabled: m == optModel,
+                ));
+              }
             }
           }
         }
+
         if (result.isNotEmpty) {
-          if (!result.any((m) => m.name == currentModel)) {
+          if (optModel.isNotEmpty && !result.any((m) => m.name == optModel)) {
             result.insert(0, ModelConfig(
-              name: currentModel,
-              provider: currentProvider,
-              model: currentModel,
+              name: optModel,
+              provider: optProvider,
+              model: optModel,
               baseUrl: '',
               enabled: true,
             ));
@@ -1079,92 +1519,199 @@ class RemoteConnection extends HermesConnection {
       }
     } catch (_) {}
 
-    try {
-      final info = await _dio.get("/api/model/info");
-      if (info.data is Map<String, dynamic>) {
-        final currentModel = info.data['model'] as String? ?? 'hermes-agent';
-        final currentProvider = info.data['provider'] as String? ?? 'openrouter';
-        return [
-          ModelConfig(
-            name: currentModel,
-            provider: currentProvider,
-            model: currentModel,
-            baseUrl: '',
-            enabled: true,
-          )
-        ];
-      }
-    } catch (_) {}
-
-    try {
-      final res = await _dio.get("/v1/models");
-      if (res.data is List<dynamic>) {
-        return (res.data as List<dynamic>)
-            .map((j) => ModelConfig.fromJson(j as Map<String, dynamic>))
-            .toList();
-      }
-    } catch (_) {}
+    if (currentModel.isNotEmpty) {
+      return [
+        ModelConfig(
+          name: currentModel,
+          provider: currentProvider.isNotEmpty ? currentProvider : 'openrouter',
+          model: currentModel,
+          baseUrl: customBaseUrl,
+          enabled: true,
+        ),
+      ];
+    }
     return [];
   }
+
   @override
-  Future<void> setModelEnabled(String name, bool enabled) async {
+  Future<void> clearLocalCache() async {
+    try {
+      await _dio.post("/api/cache/clear", data: {});
+    } catch (_) {}
+  }
+
+  @override
+  Future<void> setModelEnabled(String name, bool enabled, {String? provider}) async {
+    String customBaseUrl = _customBaseUrl ?? '';
+    String customApiKey = _customApiKey ?? '';
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (customBaseUrl.isEmpty) {
+        customBaseUrl = prefs.getString('custom_inference_base_url') ?? '';
+      }
+      if (customApiKey.isEmpty) {
+        customApiKey = prefs.getString('custom_inference_api_key') ?? '';
+      }
+      await prefs.setString('active_selected_model', name);
+    } catch (_) {}
+
+    if (customBaseUrl.isEmpty || customApiKey.isEmpty) {
+      try {
+        final env = await readEnv();
+        if (customBaseUrl.isEmpty) {
+          customBaseUrl = env['CUSTOM_BASE_URL'] ?? env['DEEPSEEK_BASE_URL'] ?? env['OPENAI_BASE_URL'] ?? '';
+        }
+        if (customApiKey.isEmpty) {
+          customApiKey = env['CUSTOM_API_KEY'] ?? env['DEEPSEEK_API_KEY'] ?? env['OPENAI_API_KEY'] ?? '';
+        }
+      } catch (_) {}
+    }
+
+    String p = provider?.trim() ?? '';
+    final isOpenRouter = customBaseUrl.toLowerCase().contains('openrouter') ||
+        p.toLowerCase() == 'openrouter';
+    final isCustom = !isOpenRouter && (customBaseUrl.isNotEmpty ||
+        p.toLowerCase() == 'custom' ||
+        p.toLowerCase().startsWith('custom:'));
+
+    final targetProvider = isOpenRouter
+        ? 'openrouter'
+        : (isCustom ? 'custom' : (p.isNotEmpty ? p : 'openrouter'));
+
     try {
       final res = await _dio.post("/api/model/set", data: {
         "scope": "main",
-        "provider": "openrouter",
+        "provider": targetProvider,
         "model": name,
+        if (isCustom && customBaseUrl.isNotEmpty) "base_url": customBaseUrl,
+        if (customApiKey.isNotEmpty) "api_key": customApiKey,
       });
       if (res.statusCode == 200) return;
     } catch (_) {}
+
     try {
       await _dio.patch("/v1/models/$name", data: {"enabled": enabled});
     } catch (_) {}
   }
+
   @override
   Future<void> setModelProviderKey(String modelName, String provider, String key) async {
+    String p = provider.trim();
+    if (p.isEmpty || p.toLowerCase() == 'default') {
+      try {
+        final models = await getModels();
+        final match = models.where((m) => m.name == modelName).firstOrNull;
+        if (match != null && match.provider.isNotEmpty) {
+          p = match.provider;
+        }
+      } catch (_) {}
+    }
+    if (p.isEmpty) p = 'custom';
+
     try {
       final res = await _dio.post("/api/model/set", data: {
         "scope": "main",
-        "provider": provider.isEmpty || provider == 'default' ? 'openrouter' : provider,
-        "model": modelName.isEmpty || modelName == 'hermes-agent' ? 'thinkingmachines/inkling:free' : modelName,
+        "provider": p,
+        "model": modelName.isEmpty || modelName == 'hermes-agent' ? 'gpt-4o' : modelName,
         "api_key": key,
       });
       if (res.statusCode == 200) return;
     } catch (_) {}
 
     try {
-      await _dio.put("/v1/models/$modelName/provider", data: {"provider": provider, "api_key": key});
+      await _dio.put("/v1/models/$modelName/provider", data: {"provider": p, "api_key": key});
     } catch (_) {}
   }
+  String _extractSnippetFromRawMessages(List<Map<String, dynamic>> messages, {String fallback = ''}) {
+    if (messages.isEmpty) return fallback;
+    for (int i = messages.length - 1; i >= 0; i--) {
+      final msg = messages[i];
+      final role = (msg['role'] as String? ?? '').toLowerCase();
+      if (role == 'system' || role == 'tool') continue;
+
+      dynamic rawContent = msg['content'];
+      String text = '';
+      if (rawContent is String) {
+        text = rawContent;
+      } else if (rawContent is List) {
+        text = rawContent.map((c) {
+          if (c is Map && c['text'] != null) return c['text'].toString();
+          return c.toString();
+        }).join(' ');
+      }
+
+      // Clean thinking tags and tool calls
+      text = text.replaceAll(RegExp(r'<think>[\s\S]*?(?:</think>|$)', caseSensitive: false), '').trim();
+      text = text.replaceAll(RegExp(r'<tool_call>[\s\S]*?(?:</tool_call>|$)', caseSensitive: false), '').trim();
+      text = text.replaceAll(RegExp(r'<tool[^>]*>[\s\S]*?(?:</tool>|$)', caseSensitive: false), '').trim();
+      text = text.replaceAll(RegExp(r'```[\s\S]*?```'), '[code]').trim();
+      text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+      if (text.isNotEmpty) {
+        final prefix = (role == 'assistant' || role == 'agent' || role == 'bot') ? 'Pixie: ' : 'You: ';
+        return '$prefix$text';
+      }
+    }
+    return fallback;
+  }
+
   // -- Sessions --
   @override
   Future<List<SessionSummary>> getSessions({String? query}) async {
     final qp = query != null ? "?q=$query" : "";
+    List<SessionSummary> sessions = [];
+
     try {
       final res = await _dio.get("/api/sessions$qp");
       if (res.data is Map<String, dynamic>) {
         final list = (res.data['sessions'] as List<dynamic>?) ?? [];
-        return list.map((j) => SessionSummary.fromJson(j as Map<String, dynamic>)).toList();
+        sessions = list.map((j) => SessionSummary.fromJson(j as Map<String, dynamic>)).toList();
       } else if (res.data is List<dynamic>) {
-        return (res.data as List<dynamic>)
+        sessions = (res.data as List<dynamic>)
             .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>))
             .toList();
       }
     } catch (_) {}
 
+    if (sessions.isEmpty) {
+      try {
+        final res = await _dio.get("/v1/sessions$qp");
+        if (res.data is List<dynamic>) {
+          sessions = (res.data as List<dynamic>)
+              .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>))
+              .toList();
+        } else if (res.data is Map<String, dynamic>) {
+          final list = (res.data['sessions'] as List<dynamic>?) ?? [];
+          sessions = list.map((j) => SessionSummary.fromJson(j as Map<String, dynamic>)).toList();
+        }
+      } catch (_) {}
+    }
+
+    if (sessions.isEmpty) return [];
+
+    // Concurrently enrich top sessions with their latest message from getSessionMessages
     try {
-      final res = await _dio.get("/v1/sessions$qp");
-      if (res.data is List<dynamic>) {
-        return (res.data as List<dynamic>)
-            .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>))
-            .toList();
-      } else if (res.data is Map<String, dynamic>) {
-        final list = (res.data['sessions'] as List<dynamic>?) ?? [];
-        return list.map((j) => SessionSummary.fromJson(j as Map<String, dynamic>)).toList();
+      final limit = sessions.length > 25 ? 25 : sessions.length;
+      final enrichedTop = await Future.wait(
+        sessions.take(limit).map((s) async {
+          try {
+            final msgs = await getSessionMessages(s.id);
+            if (msgs.isNotEmpty) {
+              final lastSnippet = _extractSnippetFromRawMessages(msgs, fallback: s.snippet);
+              if (lastSnippet.isNotEmpty) {
+                return s.copyWith(snippet: lastSnippet);
+              }
+            }
+          } catch (_) {}
+          return s;
+        }),
+      );
+      for (int i = 0; i < enrichedTop.length; i++) {
+        sessions[i] = enrichedTop[i];
       }
     } catch (_) {}
 
-    return [];
+    return sessions;
   }
   @override
   Future<void> deleteSession(String id) async {
@@ -1332,15 +1879,18 @@ class RemoteConnection extends HermesConnection {
 
       final String wsUri;
       if (wsTicket != null && wsTicket.isNotEmpty) {
-        wsUri = '$_wsBaseUrl?ticket=$wsTicket';
+        wsUri = '$_wsBaseUrl?ticket=${Uri.encodeQueryComponent(wsTicket)}';
       } else {
         final token = _accessToken ?? config.apiKey ?? '';
-        wsUri = '$_wsBaseUrl?token=$token';
+        wsUri = '$_wsBaseUrl?token=${Uri.encodeQueryComponent(token)}';
       }
 
       final wsHeaders = <String, dynamic>{};
       if (_cookieHeader != null) wsHeaders['Cookie'] = _cookieHeader;
-      if (_accessToken != null) wsHeaders['Authorization'] = 'Bearer $_accessToken';
+      final effectiveToken = _accessToken ?? config.apiKey;
+      if (effectiveToken != null && effectiveToken.isNotEmpty) {
+        wsHeaders['Authorization'] = 'Bearer $effectiveToken';
+      }
 
       final ws = await WebSocket.connect(
         wsUri,
@@ -1518,15 +2068,18 @@ class RemoteConnection extends HermesConnection {
 
       final String wsUri;
       if (wsTicket != null && wsTicket.isNotEmpty) {
-        wsUri = '$_wsBaseUrl?ticket=$wsTicket';
+        wsUri = '$_wsBaseUrl?ticket=${Uri.encodeQueryComponent(wsTicket)}';
       } else {
         final token = _accessToken ?? config.apiKey ?? '';
-        wsUri = '$_wsBaseUrl?token=$token';
+        wsUri = '$_wsBaseUrl?token=${Uri.encodeQueryComponent(token)}';
       }
 
       final wsHeaders = <String, dynamic>{};
       if (_cookieHeader != null) wsHeaders['Cookie'] = _cookieHeader;
-      if (_accessToken != null) wsHeaders['Authorization'] = 'Bearer $_accessToken';
+      final effectiveToken = _accessToken ?? config.apiKey;
+      if (effectiveToken != null && effectiveToken.isNotEmpty) {
+        wsHeaders['Authorization'] = 'Bearer $effectiveToken';
+      }
 
       final ws = await WebSocket.connect(
         wsUri,

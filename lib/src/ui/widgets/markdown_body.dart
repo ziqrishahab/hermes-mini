@@ -36,14 +36,21 @@ class MarkdownBodyWidget extends StatelessWidget {
           color: effectiveColor,
         ),
         code: GoogleFonts.jetBrainsMono(
-          backgroundColor: textColor != null ? const Color(0x33FFFFFF) : HermesTokens.codeBg,
+          backgroundColor: (textColor != null && textColor == Colors.white)
+              ? const Color(0x33FFFFFF)
+              : HermesTokens.codeBg,
           fontSize: HermesTokens.fontSizeCode,
           color: effectiveColor,
         ),
         codeblockDecoration: BoxDecoration(
-          color: textColor != null ? const Color(0x22FFFFFF) : HermesTokens.codeBg,
+          color: (textColor != null && textColor == Colors.white)
+              ? const Color(0x22FFFFFF)
+              : HermesTokens.codeBg,
           borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
-          border: Border.all(color: textColor != null ? const Color(0x33FFFFFF) : HermesTokens.border),
+          border: Border.all(
+              color: (textColor != null && textColor == Colors.white)
+                  ? const Color(0x33FFFFFF)
+                  : HermesTokens.border),
         ),
         h1: GoogleFonts.inter(
           fontSize: 20,
@@ -66,8 +73,14 @@ class MarkdownBodyWidget extends StatelessWidget {
           color: effectiveColor,
         ),
         a: GoogleFonts.inter(
-          color: textColor != null ? Colors.white : HermesTokens.accentText,
+          color: (textColor != null && textColor == Colors.white)
+              ? const Color(0xFF93C5FD)
+              : HermesTokens.accent,
+          fontWeight: FontWeight.w600,
           decoration: TextDecoration.underline,
+          decorationColor: (textColor != null && textColor == Colors.white)
+              ? const Color(0xFF93C5FD)
+              : HermesTokens.accent,
         ),
         blockquoteDecoration: BoxDecoration(
           border: const Border(left: BorderSide(color: HermesTokens.accent, width: 3)),

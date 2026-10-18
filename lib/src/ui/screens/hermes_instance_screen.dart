@@ -28,6 +28,48 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
   String? _errorMessage;
   String? _successMessage;
 
+  int? _measuredLatency;
+  bool _measuringLatency = false;
+  bool _cleaningCache = false;
+
+  Future<void> _pingInstance() async {
+    setState(() => _measuringLatency = true);
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn != null) {
+      final sw = Stopwatch()..start();
+      try {
+        await conn.health();
+      } catch (_) {}
+      sw.stop();
+      if (mounted) {
+        setState(() {
+          _measuredLatency = sw.elapsedMilliseconds;
+          _measuringLatency = false;
+        });
+      }
+    } else {
+      if (mounted) setState(() => _measuringLatency = false);
+    }
+  }
+
+  Future<void> _cleanCache() async {
+    setState(() => _cleaningCache = true);
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn != null) {
+      try {
+        await conn.clearLocalCache();
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() => _cleaningCache = false);
+      HermesToast.show(
+        context,
+        message: 'Storage cache cleaned successfully',
+        type: HermesToastType.info,
+      );
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -575,6 +617,123 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                           ),
                         ),
                       ],
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 18),
+
+              // 3. Maintenance Card (Clean, Minimalist, No badges/emojis)
+              Container(
+                padding: const EdgeInsets.all(20),
+                decoration: NeumorphicDecoration.raised(radius: 20),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'INSTANCE MAINTENANCE',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                        color: HermesTokens.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            decoration: NeumorphicDecoration.recessed(radius: 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'LATENCY',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: HermesTokens.textMuted,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _measuredLatency != null ? '$_measuredLatency ms' : 'Untested',
+                                  style: const TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w700,
+                                    color: HermesTokens.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: TactileContainer(
+                            onTap: _measuringLatency ? null : _pingInstance,
+                            child: Container(
+                              height: 48,
+                              alignment: Alignment.center,
+                              decoration: NeumorphicDecoration.raised(
+                                radius: 12,
+                                distance: 2,
+                                blur: 4,
+                              ),
+                              child: _measuringLatency
+                                  ? const SizedBox(
+                                      width: 14,
+                                      height: 14,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 1.5,
+                                        color: HermesTokens.accent,
+                                      ),
+                                    )
+                                  : const Text(
+                                      'Test Latency',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: HermesTokens.textPrimary,
+                                      ),
+                                    ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    TactileContainer(
+                      onTap: _cleaningCache ? null : _cleanCache,
+                      child: Container(
+                        height: 44,
+                        width: double.infinity,
+                        alignment: Alignment.center,
+                        decoration: NeumorphicDecoration.raised(
+                          radius: 12,
+                          distance: 2,
+                          blur: 4,
+                        ),
+                        child: _cleaningCache
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                  color: HermesTokens.textMuted,
+                                ),
+                              )
+                            : const Text(
+                                'Clear Storage Cache',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: HermesTokens.textPrimary,
+                                ),
+                              ),
+                      ),
                     ),
                   ],
                 ),

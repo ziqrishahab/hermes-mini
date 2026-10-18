@@ -18,9 +18,29 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _searchCtrl = TextEditingController();
+  final _scrollCtrl = ScrollController();
+  int _visibleCount = 20;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollCtrl.addListener(_onScroll);
+  }
+
+  void _onScroll() {
+    if (_scrollCtrl.position.pixels >= _scrollCtrl.position.maxScrollExtent - 200) {
+      if (mounted) {
+        setState(() {
+          _visibleCount += 15;
+        });
+      }
+    }
+  }
 
   @override
   void dispose() {
+    _scrollCtrl.removeListener(_onScroll);
+    _scrollCtrl.dispose();
     _searchCtrl.dispose();
     super.dispose();
   }
@@ -291,7 +311,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final yesterday = today.subtract(const Duration(days: 1));
     final Map<String, List<SessionSummary>> groups = {};
 
-    for (final s in sessions) {
+    final pagedSessions = sessions.take(_visibleCount).toList();
+    for (final s in pagedSessions) {
       final parsed = DateTime.tryParse(s.startedAt) ?? DateTime.now();
       final d = DateTime(parsed.year, parsed.month, parsed.day);
       String label;
@@ -307,6 +328,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     return ListView(
+      controller: _scrollCtrl,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 6, 16, 80),
       children: groups.entries.map((e) => _dateGroup(e.key, e.value)).toList(),
@@ -339,6 +361,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Widget _sessionCard(SessionSummary s) {
     final time = _formatTime(DateTime.tryParse(s.startedAt));
     final isGenerating = ref.watch(generatingSessionsProvider).contains(s.id);
+    ref.watch(chatMessagesProvider);
+    final cachedSnippet = ref.read(chatMessagesProvider.notifier).getLatestSnippetForSession(s.id);
+    final displaySnippet = (cachedSnippet != null && cachedSnippet.isNotEmpty)
+        ? cachedSnippet
+        : (s.snippet.isNotEmpty ? s.snippet : "No messages yet");
 
     return Dismissible(
       key: Key('session_${s.id}'),
@@ -474,7 +501,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               children: [
                                 Expanded(
                                   child: Text(
-                                    s.snippet.isNotEmpty ? s.snippet : "No messages yet",
+                                    displaySnippet,
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
                                     style: const TextStyle(

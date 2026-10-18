@@ -1,14 +1,18 @@
 import "dart:convert";
 import "package:flutter/foundation.dart";
+import "package:flutter/services.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:uuid/uuid.dart";
 import "../models/chat_message.dart";
 import "../services/hermes_connection.dart";
+import "../services/device_executor_service.dart";
+import "../services/accessibility_service.dart";
 import "connection_provider.dart";
 final chatMessagesProvider =
     StateNotifierProvider<ChatNotifier, List<ChatMessage>>((ref) {
       return ChatNotifier(ref);
     });
+final chatProvider = chatMessagesProvider;
 
 final modelsProvider = FutureProvider<List<ModelConfig>>((ref) async {
   final conn = ref.watch(connectionProvider).valueOrNull;
@@ -240,6 +244,99 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
     state = updatedList;
 
     final trimmedText = text.trim();
+    if (trimmedText.startsWith('/device') || trimmedText.startsWith('/mobile')) {
+      final parts = trimmedText.split(RegExp(r'\s+'));
+      final sub = parts.length > 1 ? parts[1].toLowerCase() : 'help';
+      final arg = parts.length > 2 ? parts.sublist(2).join(' ') : '';
+
+      String formatted;
+      if (sub == 'help') {
+        formatted = '''**Hermes Mobile Device Executor**
+Native on-device actions (Cellular / Offline / No ADB needed):
+
+- `/device a11y` : Check status or open Accessibility Service Settings
+- `/device wa <phone> <message>` : Send WhatsApp message automatically
+- `/device click <text>` : Click element on screen by text
+- `/device type <text>` : Type text into focused input field
+- `/device screen` : Read all visible UI text on current screen
+- `/device info` : Show OS, device hardware, and platform info
+- `/device network` : Check cellular (4G/5G) / Wi-Fi status
+- `/device vibrate` : Trigger device haptic vibration
+- `/device clipboard [text]` : Read or copy text to clipboard
+- `/device open <app>` : Open app (youtube, whatsapp, maps, chrome, spotify)
+- `/device open <url>` : Open web link in external browser''';
+      } else {
+        MobileActionResult res;
+        if (sub == 'a11y' || sub == 'accessibility') {
+          final isEnabled = await AccessibilityService.isEnabled();
+          if (!isEnabled) {
+            await AccessibilityService.openSettings();
+            res = const MobileActionResult(
+              success: true,
+              action: 'enable_accessibility',
+              message: 'Opened Accessibility Settings. Please turn on "Hermes Mobile Agent".',
+            );
+          } else {
+            res = const MobileActionResult(
+              success: true,
+              action: 'check_accessibility',
+              message: 'Hermes Accessibility Service is ACTIVE. Full zero-touch automation is ready.',
+            );
+          }
+        } else if (sub == 'wa' || sub == 'whatsapp') {
+          final subParts = arg.split(RegExp(r'\s+'));
+          final phone = subParts.isNotEmpty ? subParts.first : '';
+          final msg = subParts.length > 1 ? subParts.sublist(1).join(' ') : 'Halo';
+          res = await DeviceExecutorService.execute('send_whatsapp', {'phone': phone, 'message': msg});
+        } else if (sub == 'click') {
+          res = await DeviceExecutorService.execute('click', {'text': arg});
+        } else if (sub == 'type') {
+          res = await DeviceExecutorService.execute('type', {'text': arg});
+        } else if (sub == 'screen') {
+          res = await DeviceExecutorService.execute('read_screen', {});
+        } else if (sub == 'info') {
+          res = await DeviceExecutorService.execute('get_device_info', {});
+        } else if (sub == 'network' || sub == 'connectivity') {
+          res = await DeviceExecutorService.execute('get_connectivity', {});
+        } else if (sub == 'vibrate') {
+          res = await DeviceExecutorService.execute('vibrate', {});
+        } else if (sub == 'clipboard') {
+          if (arg.isNotEmpty) {
+            res = await DeviceExecutorService.execute('set_clipboard', {'text': arg});
+          } else {
+            res = await DeviceExecutorService.execute('get_clipboard', {});
+          }
+        } else if (sub == 'open') {
+          res = await DeviceExecutorService.execute('open_app', {'target': arg});
+        } else {
+          res = await DeviceExecutorService.execute(sub, {'target': arg});
+        }
+
+        final statusStr = res.success ? 'Success' : 'Failed';
+        final dataStr = res.data != null
+            ? '\n\n```json\n${const JsonEncoder.withIndent('  ').convert(res.data)}\n```'
+            : '';
+        formatted = '**Device Action:** `${res.action}` ($statusStr)\n${res.message}$dataStr';
+      }
+
+      final current = _sessionCache[targetSession] ?? state;
+      final nextList = [
+        for (final m in current)
+          if (m.id == assistantId)
+            m.copyWith(content: formatted, isStreaming: false)
+          else
+            m,
+      ];
+      _sessionCache[targetSession] = nextList;
+      state = nextList;
+      ref.read(generatingSessionsProvider.notifier).update((s) {
+        final copy = Set<String>.from(s);
+        copy.remove(targetSession);
+        return copy;
+      });
+      return;
+    }
+
     if (trimmedText.startsWith('/')) {
       try {
         final out = await conn.executeSlashCommand(
@@ -280,8 +377,25 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       return;
     }
 
+    final lowerText = text.toLowerCase();
+    final isDeviceIntent = lowerText.contains('hp') ||
+        lowerText.contains('hape') ||
+        lowerText.contains('phone') ||
+        lowerText.contains('device') ||
+        lowerText.contains('buka ') ||
+        lowerText.contains('open ') ||
+        lowerText.contains('youtube') ||
+        lowerText.contains('whatsapp') ||
+        lowerText.contains('vibrate') ||
+        lowerText.contains('getar') ||
+        lowerText.contains('clipboard');
+
+    final textToSend = isDeviceIntent
+        ? '$text\n\n${DeviceExecutorService.deviceCapabilityPrompt}'
+        : text;
+
     try {
-      await for (final chunk in conn.streamChat(text, model: model, sessionId: targetSession.startsWith('temp_') ? null : targetSession)) {
+      await for (final chunk in conn.streamChat(textToSend, model: model, sessionId: targetSession.startsWith('temp_') ? null : targetSession)) {
         final liveStoredId = conn.activeSessionId;
         final current = _sessionCache[targetSession] ?? state;
         final nextList = [
@@ -302,19 +416,96 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
       activeSessionId = resolvedSessionId;
 
       final finalCurrent = _sessionCache[targetSession] ?? state;
-      final completedList = [
+      final completedContent = finalCurrent.firstWhere((m) => m.id == assistantId, orElse: () => assistantMsg).content;
+      final finalEffective = completedContent.trim().isEmpty
+          ? "Respon kosong dari provider. Periksa endpoint URL, API Key, dan kuota model Anda di Model Configuration."
+          : completedContent;
+
+      // Detect and execute any embedded mobile action(s)
+      final mobileReqs = DeviceExecutorService.extractActions(finalEffective);
+      List<ChatMessage> finalList = [
         for (final m in finalCurrent)
-          if (m.id == assistantId) m.copyWith(isStreaming: false) else m,
+          if (m.id == assistantId)
+            m.copyWith(
+              content: finalEffective,
+              isStreaming: false,
+            )
+          else
+            m,
       ];
-      _sessionCache[targetSession] = completedList;
-      _sessionCache[resolvedSessionId] = completedList;
-      state = completedList;
+
+      if (mobileReqs.isNotEmpty) {
+        // Separate out internal monologue
+        String rawMonologue = finalEffective;
+        for (final req in mobileReqs) {
+          rawMonologue = rawMonologue.replaceAll(req.rawMatch, '').trim();
+        }
+
+        final toolCards = <ChatMessage>[];
+        final feedbackList = <String>[];
+
+        for (final req in mobileReqs) {
+          final actionRes = await DeviceExecutorService.execute(req.action, req.params);
+          feedbackList.add(actionRes.message);
+          toolCards.add(ChatMessage(
+            id: const Uuid().v4(),
+            role: MessageRole.tool,
+            content: actionRes.message,
+            toolName: 'mobile_${req.action}',
+            toolStatus: actionRes.success ? 'completed' : 'failed',
+            toolInput: jsonEncode(req.params),
+            toolOutput: actionRes.toString(),
+            timestamp: DateTime.now(),
+          ));
+        }
+
+        HapticFeedback.mediumImpact();
+
+        // Build clean user-facing response:
+        // Raw internal monologue is wrapped in <think> so Thought Process shows it properly
+        String finalAssistantText = "";
+        if (rawMonologue.isNotEmpty) {
+          if (!rawMonologue.contains('<think>') && !rawMonologue.contains('<thinking>')) {
+            finalAssistantText = '<think>$rawMonologue</think>\n\n';
+          } else {
+            finalAssistantText = '$rawMonologue\n\n';
+          }
+        }
+
+        final feedbackSummary = feedbackList.join('\n');
+        finalAssistantText += feedbackSummary;
+
+        final updatedAssistantList = [
+          for (final m in finalList)
+            if (m.id == assistantId)
+              m.copyWith(
+                content: finalAssistantText,
+                isStreaming: false,
+              )
+            else
+              m,
+        ];
+
+        finalList = [...updatedAssistantList, ...toolCards];
+      }
+
+      _sessionCache[targetSession] = finalList;
+      _sessionCache[resolvedSessionId] = finalList;
+      state = finalList;
 
       // Unregister generating
       ref.read(generatingSessionsProvider.notifier).update((s) => s.where((id) => id != targetSession && id != resolvedSessionId).toSet());
 
       // Refresh sessions in background so user sees updated message count / title
       ref.invalidate(sessionsProvider);
+
+      // Only auto-reload from Hermes daemon if no local mobile actions were executed,
+      // so local mobile tool cards and feedback are never overwritten
+      if (mobileReqs.isEmpty) {
+        Future.delayed(const Duration(milliseconds: 350), () {
+          loadSession(resolvedSessionId, forceReload: true);
+        });
+      }
     } catch (e) {
       final current = _sessionCache[targetSession] ?? state;
       final errList = [
@@ -424,7 +615,36 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
                     ? MessageRole.tool
                     : MessageRole.user));
 
-        final content = item['content']?.toString() ?? '';
+        var content = item['content']?.toString() ?? '';
+        if (role == MessageRole.user && content.contains('[DEVICE CONTROL CAPABILITY]')) {
+          content = content.split('[DEVICE CONTROL CAPABILITY]').first.trim();
+        }
+        final reasoning = item['reasoning']?.toString() ??
+            item['reasoning_content']?.toString() ??
+            item['thought']?.toString() ??
+            item['thinking']?.toString();
+
+        if (reasoning != null && reasoning.isNotEmpty && !content.contains('<think>') && !content.contains('<thinking>')) {
+          content = '<think>$reasoning</think>\n$content';
+        }
+
+        // Preserve thinking content from memory/stream if server messages don't embed think tags
+        if (role == MessageRole.assistant && !content.contains('<think>') && !content.contains('<thinking>')) {
+          final idMatch = item['id']?.toString() ?? item['message_uid']?.toString();
+          final existing = state.where((m) =>
+            m.role == MessageRole.assistant &&
+            ((idMatch != null && m.id == idMatch) || m.content.contains('<think>') || m.content.contains('<thinking>'))
+          ).lastOrNull;
+
+          if (existing != null) {
+            final thinkMatch = RegExp(r'<(?:think|thinking)>([\s\S]*?)<\/(?:think|thinking)>', caseSensitive: false)
+                .firstMatch(existing.content);
+            if (thinkMatch != null) {
+              content = '${thinkMatch.group(0)}\n$content';
+            }
+          }
+        }
+
         final tsRaw = item['timestamp'];
         DateTime ts = DateTime.now();
         if (tsRaw is num) {
@@ -480,12 +700,50 @@ class ChatNotifier extends StateNotifier<List<ChatMessage>> {
         ));
       }
       if (loaded.isNotEmpty || !_sessionCache.containsKey(sessionId)) {
+        // Preserve any local mobile tool messages in cache
+        final prevMessages = _sessionCache[sessionId] ?? state;
+        final localMobileTools = prevMessages.where((m) =>
+          m.role == MessageRole.tool && (m.toolName?.startsWith('mobile_') ?? false)
+        ).toList();
+
+        for (final mt in localMobileTools) {
+          if (!loaded.any((m) => m.id == mt.id || (m.toolName == mt.toolName && m.toolInput == mt.toolInput))) {
+            loaded.add(mt);
+          }
+        }
+
         _sessionCache[sessionId] = loaded;
         if (activeSessionId == sessionId) {
           state = loaded;
         }
       }
     } catch (_) {}
+  }
+
+  String? getLatestSnippetForSession(String sessionId) {
+    final list = _sessionCache[sessionId] ?? (activeSessionId == sessionId ? state : null);
+    if (list == null || list.isEmpty) return null;
+
+    for (int i = list.length - 1; i >= 0; i--) {
+      final msg = list[i];
+      if (msg.role == MessageRole.system || msg.role == MessageRole.tool) continue;
+
+      String text = msg.content;
+      if (text.contains('[DEVICE CONTROL CAPABILITY]')) {
+        text = text.split('[DEVICE CONTROL CAPABILITY]').first.trim();
+      }
+      text = text.replaceAll(RegExp(r'<think>[\s\S]*?(?:</think>|$)', caseSensitive: false), '').trim();
+      text = text.replaceAll(RegExp(r'<tool_call>[\s\S]*?(?:</tool_call>|$)', caseSensitive: false), '').trim();
+      text = text.replaceAll(RegExp(r'<tool[^>]*>[\s\S]*?(?:</tool>|$)', caseSensitive: false), '').trim();
+      text = text.replaceAll(RegExp(r'```[\s\S]*?```'), '[code]').trim();
+      text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+
+      if (text.isNotEmpty) {
+        final prefix = msg.role == MessageRole.assistant ? 'Pixie: ' : 'You: ';
+        return '$prefix$text';
+      }
+    }
+    return null;
   }
 
   void clear() {

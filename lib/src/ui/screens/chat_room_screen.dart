@@ -105,6 +105,12 @@ final List<_SlashCommandDef> _allSlashCommands = [
     icon: Icons.shield_outlined,
   ),
   _SlashCommandDef(
+    command: "/device",
+    label: "Device Control",
+    description: "Control local Android apps, battery, clipboard & status",
+    icon: Icons.phone_android_rounded,
+  ),
+  _SlashCommandDef(
     command: "/help",
     label: "Help & Commands",
     description: "View all commands and quick shortcuts",
@@ -227,6 +233,7 @@ class ChatRoomScreen extends ConsumerStatefulWidget {
 
 class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   final _ctrl = TextEditingController();
+  final _inputFocus = FocusNode();
   final _scroll = ScrollController();
   bool _streaming = false;
   bool _loadingSession = false;
@@ -249,6 +256,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     _randomizeSuggestions();
     _sessionTitle = widget.title ?? "Hermes Agent";
     _ctrl.addListener(_onTextChanged);
+    _inputFocus.addListener(() {
+      if (_inputFocus.hasFocus) {
+        Future.delayed(const Duration(milliseconds: 250), () {
+          if (mounted) _scrollToBottom();
+        });
+      }
+    });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _loadCwd();
       if (widget.sessionId != null && widget.sessionId!.isNotEmpty) {
@@ -328,6 +342,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   void dispose() {
     _ctrl.removeListener(_onTextChanged);
     _ctrl.dispose();
+    _inputFocus.dispose();
     _scroll.dispose();
     super.dispose();
   }
@@ -674,6 +689,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   void _handleSlashCommand(_SlashCommandDef cmd) {
+    if (cmd.command == "/device") {
+      _ctrl.text = "/device ";
+      _ctrl.selection = TextSelection.fromPosition(
+        TextPosition(offset: _ctrl.text.length),
+      );
+      _inputFocus.requestFocus();
+      setState(() {});
+      return;
+    }
+
     _ctrl.clear();
     setState(() {});
 
@@ -754,6 +779,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         : <_SlashCommandDef>[];
 
     return Scaffold(
+      resizeToAvoidBottomInset: true,
       backgroundColor: HermesTokens.bgPrimary,
       appBar: AppBar(
         backgroundColor: HermesTokens.bgPrimary,
@@ -925,117 +951,125 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           ),
         ],
       ),
-      body: Column(
-        children: [
-          _buildTopPillsRow(totalTokens, estCost, selected),
-          Expanded(
-            child: IndexedStack(
-              index: _isVibeMode ? 1 : 0,
-              children: [
-                _buildChatView(messages, isGenerating),
-                VibeModeView(
-                  messages: messages,
-                  isGenerating: isGenerating,
-                  activeCwd: ref.watch(activeWorkspaceProvider).path.isNotEmpty
-                      ? ref.watch(activeWorkspaceProvider).path
-                      : _activeCwd,
-                  connection: ref.watch(connectionProvider).valueOrNull,
-                  onQuickPrompt: (prompt) {
-                    _ctrl.text = prompt;
-                    _send();
-                  },
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-      bottomNavigationBar: SafeArea(
+      body: SafeArea(
+        bottom: false,
         child: Column(
-          mainAxisSize: MainAxisSize.min,
           children: [
-            if (_isVibeMode)
-              _buildVibeQuickChips(),
-            if (!isGenerating && pendingApproval != null)
-              _buildApprovalCard(pendingApproval),
-            if (_attachment != null)
-              _buildAttachmentPreview(),
-            if (isSlash && matchingCommands.isNotEmpty)
-              _buildSlashCommandsPalette(matchingCommands),
-            Container(
-              padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
-              decoration: BoxDecoration(
-                color: HermesTokens.bgPrimary,
-                boxShadow: const [
-                  BoxShadow(
-                    color: Colors.white,
-                    offset: Offset(0, -4),
-                    blurRadius: 8,
-                  ),
-                  BoxShadow(
-                    color: Color(0x22A3B1C6),
-                    offset: Offset(0, -1),
-                    blurRadius: 3,
+            _buildTopPillsRow(totalTokens, estCost, selected),
+            Expanded(
+              child: IndexedStack(
+                index: _isVibeMode ? 1 : 0,
+                children: [
+                  _buildChatView(messages, isGenerating),
+                  VibeModeView(
+                    messages: messages,
+                    isGenerating: isGenerating,
+                    activeCwd: ref.watch(activeWorkspaceProvider).path.isNotEmpty
+                        ? ref.watch(activeWorkspaceProvider).path
+                        : _activeCwd,
+                    connection: ref.watch(connectionProvider).valueOrNull,
+                    onQuickPrompt: (prompt) {
+                      _ctrl.text = prompt;
+                      _send();
+                    },
                   ),
                 ],
               ),
-              child: Row(
+            ),
+            SafeArea(
+              top: false,
+              bottom: MediaQuery.of(context).viewInsets.bottom == 0,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
+                  if (_isVibeMode)
+                    _buildVibeQuickChips(),
+                  if (!isGenerating && pendingApproval != null)
+                    _buildApprovalCard(pendingApproval),
+                  if (_attachment != null)
+                    _buildAttachmentPreview(),
+                  if (isSlash && matchingCommands.isNotEmpty)
+                    _buildSlashCommandsPalette(matchingCommands),
                   Container(
-                    width: 40,
-                    height: 40,
-                    decoration: NeumorphicDecoration.raised(radius: 14, distance: 2, blur: 4),
-                    child: IconButton(
-                      tooltip: "Attach file",
-                      icon: const Icon(Icons.attach_file_rounded, color: HermesTokens.textSecondary, size: 18),
-                      padding: EdgeInsets.zero,
-                      onPressed: isGenerating ? null : _pickAttachment,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Container(
-                      decoration: NeumorphicDecoration.recessed(radius: 18),
-                      padding: const EdgeInsets.symmetric(horizontal: 16),
-                      child: TextField(
-                        controller: _ctrl,
-                        enabled: !isGenerating,
-                        style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
-                        decoration: const InputDecoration(
-                          hintText: "Message MyPixie or type / for commands...",
-                          hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
-                          filled: false,
-                          border: InputBorder.none,
-                          enabledBorder: InputBorder.none,
-                          focusedBorder: InputBorder.none,
-                          contentPadding: EdgeInsets.symmetric(vertical: 12),
-                          isDense: true,
+                    key: const ValueKey('chat_input_bar_container'),
+                    padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
+                    decoration: BoxDecoration(
+                      color: HermesTokens.bgPrimary,
+                      boxShadow: const [
+                        BoxShadow(
+                          color: Colors.white,
+                          offset: Offset(0, -4),
+                          blurRadius: 8,
                         ),
-                        onSubmitted: (_) => _send(),
-                      ),
+                        BoxShadow(
+                          color: Color(0x22A3B1C6),
+                          offset: Offset(0, -1),
+                          blurRadius: 3,
+                        ),
+                      ],
                     ),
-                  ),
-                  const SizedBox(width: 10),
-                  Container(
-                    width: 44,
-                    height: 44,
-                    decoration: NeumorphicDecoration.circle(
-                      color: isGenerating ? HermesTokens.error : HermesTokens.accent,
-                    ),
-                    child: IconButton(
-                      tooltip: isGenerating ? "Stop generation" : "Send message",
-                      onPressed: isGenerating
-                          ? () {
-                              HapticFeedback.mediumImpact();
-                              ref.read(chatMessagesProvider.notifier).stopGeneration(
-                                sessionId: widget.sessionId,
-                              );
-                            }
-                          : _send,
-                      icon: isGenerating
-                          ? const Icon(Icons.stop_rounded, color: Colors.white, size: 24)
-                          : const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
-                      padding: EdgeInsets.zero,
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: NeumorphicDecoration.raised(radius: 14, distance: 2, blur: 4),
+                          child: IconButton(
+                            tooltip: "Attach file",
+                            icon: const Icon(Icons.attach_file_rounded, color: HermesTokens.textSecondary, size: 18),
+                            padding: EdgeInsets.zero,
+                            onPressed: isGenerating ? null : _pickAttachment,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Container(
+                            decoration: NeumorphicDecoration.recessed(radius: 18),
+                            padding: const EdgeInsets.symmetric(horizontal: 16),
+                            child: TextField(
+                              key: const ValueKey('chat_input_text_field'),
+                              controller: _ctrl,
+                              focusNode: _inputFocus,
+                              enabled: !isGenerating,
+                              style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
+                              decoration: const InputDecoration(
+                                hintText: "Message MyPixie or type / for commands...",
+                                hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                                filled: false,
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                contentPadding: EdgeInsets.symmetric(vertical: 12),
+                                isDense: true,
+                              ),
+                              onSubmitted: (_) => _send(),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Container(
+                          width: 44,
+                          height: 44,
+                          decoration: NeumorphicDecoration.circle(
+                            color: isGenerating ? HermesTokens.error : HermesTokens.accent,
+                          ),
+                          child: IconButton(
+                            tooltip: isGenerating ? "Stop generation" : "Send message",
+                            onPressed: isGenerating
+                                ? () {
+                                    HapticFeedback.mediumImpact();
+                                    ref.read(chatMessagesProvider.notifier).stopGeneration(
+                                      sessionId: widget.sessionId,
+                                    );
+                                  }
+                                : _send,
+                            icon: isGenerating
+                                ? const Icon(Icons.stop_rounded, color: Colors.white, size: 24)
+                                : const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
+                            padding: EdgeInsets.zero,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -1054,6 +1088,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         .contains((att.extension ?? '').toLowerCase());
 
     return Container(
+      key: const ValueKey('attachment_preview'),
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: NeumorphicDecoration.raised(radius: 14, distance: 2.5, blur: 5),
@@ -1102,6 +1137,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     final command = approval['command'];
     final approvalId = approval['id'];
     return Container(
+      key: ValueKey('approval_card_${approvalId ?? 'default'}'),
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: const EdgeInsets.all(14),
       decoration: NeumorphicDecoration.raised(radius: 16, distance: 3.5, blur: 8),
@@ -1179,6 +1215,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   });
                   final conn = ref.read(connectionProvider).valueOrNull;
                   if (conn != null) {
+                    await conn.respondApproval('deny');
                     await conn.denyAction();
                   }
                   ref.read(chatMessagesProvider.notifier).sendMessage("/deny", sessionId: widget.sessionId);
@@ -1208,6 +1245,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   });
                   final conn = ref.read(connectionProvider).valueOrNull;
                   if (conn != null) {
+                    await conn.respondApproval('once');
                     await conn.approveAction();
                   }
                   ref.read(chatMessagesProvider.notifier).sendMessage("/approve", sessionId: widget.sessionId);
@@ -1513,6 +1551,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     ];
 
     return Container(
+      key: const ValueKey('vibe_quick_chips'),
       height: 38,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: const BoxDecoration(
@@ -1567,8 +1606,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
 
   Widget _buildSlashCommandsPalette(List<_SlashCommandDef> commands) {
     return Container(
+      key: const ValueKey('slash_commands_palette'),
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
-      constraints: const BoxConstraints(maxHeight: 220),
+      constraints: BoxConstraints(
+        maxHeight: (MediaQuery.of(context).size.height * 0.28).clamp(140.0, 220.0),
+      ),
       decoration: NeumorphicDecoration.raised(radius: 16, distance: 3.5, blur: 8),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1602,6 +1644,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           const Divider(height: 1, color: HermesTokens.border),
           Flexible(
             child: ListView.separated(
+              primary: false,
+              physics: const ClampingScrollPhysics(),
+              keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.manual,
               shrinkWrap: true,
               padding: const EdgeInsets.symmetric(vertical: 4),
               itemCount: commands.length,
@@ -2178,7 +2223,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                                 ref.read(selectedModelProvider.notifier).state = m.name;
                                                 Navigator.of(ctx).pop();
                                                 try {
-                                                  await conn.setModelEnabled(m.name, true);
+                                                  await conn.setModelEnabled(m.name, true, provider: m.provider);
                                                   ref.invalidate(modelsProvider);
                                                 } catch (_) {}
                                               },
