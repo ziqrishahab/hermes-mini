@@ -15,7 +15,8 @@ class _ParsedFact {
 }
 
 class MemoryEditorScreen extends ConsumerStatefulWidget {
-  const MemoryEditorScreen({super.key});
+  final String? profile;
+  const MemoryEditorScreen({super.key, this.profile});
   @override
   ConsumerState<MemoryEditorScreen> createState() => _MemoryEditorScreenState();
 }
@@ -23,6 +24,7 @@ class MemoryEditorScreen extends ConsumerStatefulWidget {
 class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
   late final TextEditingController _ctrl;
   final TextEditingController _searchCtrl = TextEditingController();
+  bool _loading = true;
   bool _dirty = false;
   bool _saving = false;
   int _viewMode = 0; // 0 = Facts, 1 = Raw Markdown
@@ -31,7 +33,7 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _ctrl = TextEditingController(text: _defaultMemory);
+    _ctrl = TextEditingController();
     _loadMemory();
   }
 
@@ -39,16 +41,19 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
     final conn = ref.read(connectionProvider).valueOrNull;
     if (conn != null) {
       try {
-        final content = await conn.readMemory();
-        if (content.trim().isNotEmpty && mounted) {
+        final content = await conn.readMemory(profile: widget.profile);
+        if (mounted) {
           setState(() {
             _ctrl.text = content;
             _dirty = false;
+            _loading = false;
           });
+          return;
         }
-      } catch (_) {
-        // Keep default if loading fails
-      }
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() => _loading = false);
     }
   }
 
@@ -61,7 +66,7 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
 
     setState(() => _saving = true);
     try {
-      await conn.writeMemory(_ctrl.text);
+      await conn.writeMemory(_ctrl.text, profile: widget.profile);
       setState(() {
         _dirty = false;
         _saving = false;
@@ -121,9 +126,9 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFFE0E5EC),
+        backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-        title: const Text(
+        title: Text(
           "Add Learned Fact",
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
@@ -131,7 +136,7 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               "Fact text",
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textMuted),
             ),
@@ -142,11 +147,14 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
               child: TextField(
                 controller: factCtrl,
                 maxLines: 3,
-                style: const TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
-                decoration: const InputDecoration(
-                  hintText: "e.g. Operator prefers concise technical responses",
-                  hintStyle: TextStyle(fontSize: 13, color: HermesTokens.textMuted),
+                style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
+                decoration: InputDecoration(
+                  filled: false,
                   border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  hintText: "Fact or preference",
+                  hintStyle: TextStyle(fontSize: 13, color: HermesTokens.textMuted),
                   contentPadding: EdgeInsets.symmetric(vertical: 10),
                 ),
               ),
@@ -156,7 +164,7 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
           ),
           FilledButton(
             style: FilledButton.styleFrom(
@@ -190,18 +198,6 @@ class _MemoryEditorScreenState extends ConsumerState<MemoryEditorScreen> {
     super.dispose();
   }
 
-  static const _defaultMemory = """# Agent Long-Term Memory
-Key facts, context, and preferences remembered across past conversations.
-
-## Project Context
-- Hermes Mobile: Mobile companion client for Hermes Agent Gateway
-- Design System: Flat, minimalist, high-contrast dark theme
-- Workspace: live/hermes_mobile
-
-## Learned Facts
-- Operator prefers direct, efficient execution and clean aesthetics.
-""";
-
   @override
   Widget build(BuildContext context) {
     final allFacts = _extractFacts(_ctrl.text);
@@ -219,26 +215,26 @@ Key facts, context, and preferences remembered across past conversations.
         elevation: 0,
         scrolledUnderElevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_rounded, color: HermesTokens.textPrimary),
+          icon: Icon(Icons.arrow_back_rounded, color: HermesTokens.textPrimary),
           onPressed: () {
             if (_dirty) {
               showDialog(
                 context: context,
                 builder: (ctx) => AlertDialog(
-                  backgroundColor: const Color(0xFFE0E5EC),
+                  backgroundColor: HermesTokens.bgElevated,
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  title: const Text(
+                  title: Text(
                     "Discard changes?",
                     style: TextStyle(color: HermesTokens.textPrimary, fontSize: 16, fontWeight: FontWeight.w700),
                   ),
-                  content: const Text(
+                  content: Text(
                     "You have unsaved changes in MEMORY.md.",
                     style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13),
                   ),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text("Keep Editing", style: TextStyle(color: HermesTokens.textMuted)),
+                      child: Text("Keep Editing", style: TextStyle(color: HermesTokens.textMuted)),
                     ),
                     FilledButton(
                       style: FilledButton.styleFrom(
@@ -259,8 +255,10 @@ Key facts, context, and preferences remembered across past conversations.
             }
           },
         ),
-        title: const Text(
-          "Agent Memory",
+        title: Text(
+          widget.profile != null && widget.profile!.isNotEmpty && widget.profile != 'default'
+              ? "Memory (${widget.profile})"
+              : "Agent Memory",
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
         centerTitle: true,
@@ -268,7 +266,7 @@ Key facts, context, and preferences remembered across past conversations.
           if (_viewMode == 0)
             IconButton(
               tooltip: "Add fact",
-              icon: const Icon(Icons.add_rounded, color: HermesTokens.accent),
+              icon: Icon(Icons.add_rounded, color: HermesTokens.accent),
               onPressed: _showAddFactDialog,
             ),
           const SizedBox(width: 8),
@@ -292,7 +290,7 @@ Key facts, context, and preferences remembered across past conversations.
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 8),
                           decoration: _viewMode == 0
-                              ? NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4)
+                              ? NeumorphicDecoration.switcherThumb(radius: 10)
                               : null,
                           child: Center(
                             child: Text(
@@ -314,7 +312,7 @@ Key facts, context, and preferences remembered across past conversations.
                         child: Container(
                           padding: const EdgeInsets.symmetric(vertical: 8),
                           decoration: _viewMode == 1
-                              ? NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4)
+                              ? NeumorphicDecoration.switcherThumb(radius: 10)
                               : null,
                           child: Center(
                             child: Text(
@@ -343,19 +341,21 @@ Key facts, context, and preferences remembered across past conversations.
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   child: Row(
                     children: [
-                      const Icon(Icons.search_rounded, size: 18, color: HermesTokens.textMuted),
+                      Icon(Icons.search_rounded, size: 18, color: HermesTokens.textMuted),
                       const SizedBox(width: 8),
                       Expanded(
                         child: TextField(
                           controller: _searchCtrl,
                           onChanged: (v) => setState(() => _searchQuery = v.trim()),
-                          style: const TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
-                          decoration: const InputDecoration(
+                          style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
+                          decoration: InputDecoration(
+                            filled: false,
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
                             hintText: "Search facts...",
                             hintStyle: TextStyle(fontSize: 13, color: HermesTokens.textMuted),
-                            border: InputBorder.none,
-                            contentPadding: EdgeInsets.symmetric(vertical: 10),
-                            isDense: true,
+                            contentPadding: const EdgeInsets.symmetric(vertical: 12),
                           ),
                         ),
                       ),
@@ -365,7 +365,7 @@ Key facts, context, and preferences remembered across past conversations.
                             _searchCtrl.clear();
                             setState(() => _searchQuery = "");
                           },
-                          child: const Icon(Icons.close_rounded, size: 16, color: HermesTokens.textMuted),
+                          child: Icon(Icons.close_rounded, size: 16, color: HermesTokens.textMuted),
                         ),
                     ],
                   ),
@@ -374,11 +374,18 @@ Key facts, context, and preferences remembered across past conversations.
 
               // Facts list
               Expanded(
-                child: filteredFacts.isEmpty
+                child: _loading
+                    ? Center(
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: HermesTokens.accent,
+                        ),
+                      )
+                    : filteredFacts.isEmpty
                     ? Center(
                         child: Text(
-                          _searchQuery.isEmpty ? "No facts found in memory." : "No matching facts.",
-                          style: const TextStyle(fontSize: 13, color: HermesTokens.textMuted),
+                          _searchQuery.isEmpty ? "No facts stored in memory." : "No matching facts.",
+                          style: TextStyle(fontSize: 13, color: HermesTokens.textMuted),
                         ),
                       )
                     : ListView.builder(
@@ -400,7 +407,7 @@ Key facts, context, and preferences remembered across past conversations.
                                       children: [
                                         Text(
                                           f.category.toUpperCase(),
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             fontSize: 10,
                                             fontWeight: FontWeight.w700,
                                             letterSpacing: 0.5,
@@ -410,7 +417,7 @@ Key facts, context, and preferences remembered across past conversations.
                                         const SizedBox(height: 4),
                                         Text(
                                           f.text,
-                                          style: const TextStyle(
+                                          style: TextStyle(
                                             fontSize: 13,
                                             fontWeight: FontWeight.w500,
                                             color: HermesTokens.textPrimary,
@@ -421,7 +428,7 @@ Key facts, context, and preferences remembered across past conversations.
                                     ),
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.copy_rounded, size: 16, color: HermesTokens.textMuted),
+                                    icon: Icon(Icons.copy_rounded, size: 16, color: HermesTokens.textMuted),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                                     tooltip: "Copy fact",
@@ -431,7 +438,7 @@ Key facts, context, and preferences remembered across past conversations.
                                     },
                                   ),
                                   IconButton(
-                                    icon: const Icon(Icons.delete_outline_rounded, size: 16, color: HermesTokens.textMuted),
+                                    icon: Icon(Icons.delete_outline_rounded, size: 16, color: HermesTokens.textMuted),
                                     padding: EdgeInsets.zero,
                                     constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                                     tooltip: "Remove fact",
@@ -447,31 +454,44 @@ Key facts, context, and preferences remembered across past conversations.
             ] else ...[
               // Raw Markdown Editor
               Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  child: Container(
-                    decoration: NeumorphicDecoration.recessed(radius: 16),
-                    child: TextField(
-                      controller: _ctrl,
-                      onChanged: (_) => setState(() => _dirty = true),
-                      maxLines: null,
-                      expands: true,
-                      textAlignVertical: TextAlignVertical.top,
-                      style: GoogleFonts.jetBrainsMono(
-                        color: HermesTokens.textPrimary,
-                        fontSize: 13,
-                        height: 1.6,
+                child: _loading
+                    ? Center(
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: HermesTokens.accent,
+                        ),
+                      )
+                    : Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: Container(
+                          decoration: NeumorphicDecoration.recessed(radius: 16),
+                          child: TextField(
+                            controller: _ctrl,
+                            onChanged: (_) => setState(() => _dirty = true),
+                            maxLines: null,
+                            expands: true,
+                            textAlignVertical: TextAlignVertical.top,
+                            style: GoogleFonts.jetBrainsMono(
+                              color: HermesTokens.textPrimary,
+                              fontSize: 13,
+                              height: 1.6,
+                            ),
+                            decoration: InputDecoration(
+                              contentPadding: const EdgeInsets.all(16),
+                              hintText: "# Agent Memory\n- Add long-term facts or preferences...",
+                              hintStyle: GoogleFonts.jetBrainsMono(
+                                color: HermesTokens.textMuted,
+                                fontSize: 13,
+                                height: 1.6,
+                              ),
+                              border: InputBorder.none,
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              fillColor: Colors.transparent,
+                            ),
+                          ),
+                        ),
                       ),
-                      decoration: const InputDecoration(
-                        contentPadding: EdgeInsets.all(16),
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        fillColor: Colors.transparent,
-                      ),
-                    ),
-                  ),
-                ),
               ),
             ],
 

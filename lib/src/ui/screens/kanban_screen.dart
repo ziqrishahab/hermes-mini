@@ -146,12 +146,12 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   "Delete Task?",
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   "This task will be permanently removed from the Kanban board.",
                   style: TextStyle(fontSize: 12, color: HermesTokens.textSecondary, height: 1.4),
                 ),
@@ -161,7 +161,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                   children: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx, false),
-                      child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted, fontSize: 13)),
+                      child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted, fontSize: 13)),
                     ),
                     const SizedBox(width: 8),
                     FilledButton(
@@ -226,14 +226,14 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
               decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
               child: IconButton(
                 tooltip: "Back",
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
+                icon: Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
                 onPressed: () => context.pop(),
                 padding: EdgeInsets.zero,
               ),
             ),
           ),
         ),
-        title: const Text(
+        title: Text(
           "Kanban Board",
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
@@ -248,7 +248,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                 decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
                 child: IconButton(
                   tooltip: "Refresh board",
-                  icon: const Icon(Icons.refresh_rounded, color: HermesTokens.textSecondary, size: 18),
+                  icon: Icon(Icons.refresh_rounded, color: HermesTokens.textSecondary, size: 18),
                   onPressed: _loadBoard,
                   padding: EdgeInsets.zero,
                 ),
@@ -264,7 +264,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                 decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
                 child: IconButton(
                   tooltip: "Add task",
-                  icon: const Icon(Icons.add_rounded, color: HermesTokens.accent, size: 20),
+                  icon: Icon(Icons.add_rounded, color: HermesTokens.accent, size: 20),
                   onPressed: _showCreateTaskDialog,
                   padding: EdgeInsets.zero,
                 ),
@@ -284,7 +284,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                 controller: _tabController,
                 indicatorSize: TabBarIndicatorSize.tab,
                 dividerColor: Colors.transparent,
-                indicator: NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4),
+                indicator: NeumorphicDecoration.switcherThumb(radius: 10),
                 labelColor: HermesTokens.accent,
                 unselectedLabelColor: HermesTokens.textMuted,
                 labelStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
@@ -323,7 +323,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                           Text(
                             _error!,
                             textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 12, color: HermesTokens.textSecondary),
+                            style: TextStyle(fontSize: 12, color: HermesTokens.textSecondary),
                           ),
                           const SizedBox(height: 16),
                           InkWell(
@@ -332,7 +332,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
                               decoration: NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4),
-                              child: const Text(
+                              child: Text(
                                 "Retry",
                                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: HermesTokens.accent),
                               ),
@@ -369,15 +369,15 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                                       width: 48,
                                       height: 48,
                                       decoration: NeumorphicDecoration.recessed(radius: 14),
-                                      child: const Icon(Icons.assignment_outlined, size: 24, color: HermesTokens.textMuted),
+                                      child: Icon(Icons.assignment_outlined, size: 24, color: HermesTokens.textMuted),
                                     ),
                                     const SizedBox(height: 14),
                                     Text(
                                       "No tasks in ${col["label"]}",
-                                      style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
+                                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
                                     ),
                                     const SizedBox(height: 4),
-                                    const Text(
+                                    Text(
                                       "Create a task or move existing tasks here",
                                       textAlign: TextAlign.center,
                                       style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
@@ -389,7 +389,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                                       child: Container(
                                         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
                                         decoration: NeumorphicDecoration.raised(radius: 12, distance: 2, blur: 4),
-                                        child: const Text(
+                                        child: Text(
                                           "Create Task",
                                           style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: HermesTokens.accent),
                                         ),
@@ -431,7 +431,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                                     Expanded(
                                       child: Text(
                                         title,
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                           fontSize: 14,
                                           fontWeight: FontWeight.w700,
                                           color: HermesTokens.textPrimary,
@@ -465,14 +465,14 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                                       body,
                                       maxLines: 3,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(fontSize: 11, color: HermesTokens.textSecondary, height: 1.3),
+                                      style: TextStyle(fontSize: 11, color: HermesTokens.textSecondary, height: 1.3),
                                     ),
                                   ),
                                 ],
                                 const SizedBox(height: 12),
                                 Row(
                                   children: [
-                                    const Text(
+                                    Text(
                                       "Move to:",
                                       style: TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: HermesTokens.textMuted),
                                     ),
@@ -494,7 +494,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                                                   decoration: NeumorphicDecoration.raised(radius: 8, distance: 1.5, blur: 3),
                                                   child: Text(
                                                     targetCol["label"]!,
-                                                    style: const TextStyle(
+                                                    style: TextStyle(
                                                       fontSize: 10,
                                                       fontWeight: FontWeight.w600,
                                                       color: HermesTokens.textSecondary,
@@ -510,7 +510,7 @@ class _KanbanScreenState extends ConsumerState<KanbanScreen> with SingleTickerPr
                                     InkWell(
                                       onTap: () => _deleteTask(taskId),
                                       borderRadius: BorderRadius.circular(8),
-                                      child: const Padding(
+                                      child: Padding(
                                         padding: EdgeInsets.all(4),
                                         child: Icon(Icons.delete_outline_rounded, size: 16, color: HermesTokens.textMuted),
                                       ),
@@ -637,7 +637,7 @@ class _CreateKanbanTaskDialogState extends ConsumerState<_CreateKanbanTaskDialog
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Column(
+                    Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
@@ -652,7 +652,7 @@ class _CreateKanbanTaskDialogState extends ConsumerState<_CreateKanbanTaskDialog
                       ],
                     ),
                     IconButton(
-                      icon: const Icon(Icons.close_rounded, size: 18, color: HermesTokens.textMuted),
+                      icon: Icon(Icons.close_rounded, size: 18, color: HermesTokens.textMuted),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(),
                       onPressed: () => Navigator.pop(context),
@@ -660,7 +660,7 @@ class _CreateKanbanTaskDialogState extends ConsumerState<_CreateKanbanTaskDialog
                   ],
                 ),
                 const SizedBox(height: 18),
-                const Text(
+                Text(
                   "Title",
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
                 ),
@@ -670,17 +670,20 @@ class _CreateKanbanTaskDialogState extends ConsumerState<_CreateKanbanTaskDialog
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
                   child: TextField(
                     controller: _titleCtrl,
-                    style: const TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
-                    decoration: const InputDecoration(
-                      hintText: "Enter task title",
-                      hintStyle: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                    style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
+                    decoration: InputDecoration(
+                      filled: false,
                       border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      hintText: "Task title",
+                      hintStyle: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                       isDense: true,
                     ),
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text(
+                Text(
                   "Description (Optional)",
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
                 ),
@@ -691,17 +694,20 @@ class _CreateKanbanTaskDialogState extends ConsumerState<_CreateKanbanTaskDialog
                   child: TextField(
                     controller: _bodyCtrl,
                     maxLines: 3,
-                    style: const TextStyle(fontSize: 12, color: HermesTokens.textPrimary),
-                    decoration: const InputDecoration(
-                      hintText: "Enter details or directives",
-                      hintStyle: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                    style: TextStyle(fontSize: 12, color: HermesTokens.textPrimary),
+                    decoration: InputDecoration(
+                      filled: false,
                       border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      hintText: "Details or directives",
+                      hintStyle: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                       isDense: true,
                     ),
                   ),
                 ),
                 const SizedBox(height: 14),
-                const Text(
+                Text(
                   "Priority",
                   style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
                 ),
@@ -732,7 +738,7 @@ class _CreateKanbanTaskDialogState extends ConsumerState<_CreateKanbanTaskDialog
                   children: [
                     TextButton(
                       onPressed: () => Navigator.pop(context),
-                      child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted, fontSize: 13)),
+                      child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted, fontSize: 13)),
                     ),
                     const SizedBox(width: 8),
                     FilledButton(

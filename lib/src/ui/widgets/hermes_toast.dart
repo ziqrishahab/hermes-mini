@@ -44,12 +44,12 @@ class HermesToast {
           child: _FluidToastEntrance(
             child: Container(
               constraints: const BoxConstraints(maxWidth: 420),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding: EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: HermesTokens.bgElevated,
                 borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
                 border: Border.all(color: HermesTokens.borderBright, width: 0.8),
-                boxShadow: const [
+                boxShadow: [
                   BoxShadow(
                     color: HermesTokens.neuShadowLight,
                     offset: Offset(-3, -3),
@@ -67,7 +67,7 @@ class HermesToast {
                 children: [
                   Container(
                     padding: const EdgeInsets.all(4),
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       color: HermesTokens.bgTertiary,
                       shape: BoxShape.circle,
                     ),

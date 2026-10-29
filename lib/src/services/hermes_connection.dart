@@ -1,7 +1,8 @@
 import 'dart:async';
 import 'remote_connection.dart';
-import 'ssh_connection.dart';
 import '../models/connection_config.dart';
+import '../models/agent_profile.dart';
+import '../models/config_health_item.dart';
 
 // Data classes
 
@@ -80,6 +81,7 @@ class SessionSummary {
   final String model;
   final String snippet;
   final int unreadCount;
+  final String profile;
 
   const SessionSummary({
     required this.id,
@@ -90,6 +92,7 @@ class SessionSummary {
     required this.model,
     this.snippet = '',
     this.unreadCount = 0,
+    this.profile = 'default',
   });
 
   factory SessionSummary.fromJson(Map<String, dynamic> json) {
@@ -124,6 +127,9 @@ class SessionSummary {
       model: json['model'] as String? ?? '',
       snippet: rawSnippet.toString(),
       unreadCount: unread,
+      profile: (json['profile'] as String?)?.trim().isNotEmpty == true
+          ? (json['profile'] as String).trim()
+          : 'default',
     );
   }
 
@@ -136,6 +142,7 @@ class SessionSummary {
     String? model,
     String? snippet,
     int? unreadCount,
+    String? profile,
   }) {
     return SessionSummary(
       id: id ?? this.id,
@@ -146,6 +153,7 @@ class SessionSummary {
       model: model ?? this.model,
       snippet: snippet ?? this.snippet,
       unreadCount: unreadCount ?? this.unreadCount,
+      profile: profile ?? this.profile,
     );
   }
 
@@ -158,6 +166,7 @@ class SessionSummary {
         'model': model,
         'snippet': snippet,
         'unreadCount': unreadCount,
+        'profile': profile,
       };
 }
 
@@ -208,8 +217,10 @@ abstract class HermesConnection {
   Future<String> health();
   String? get activeSessionId => null;
   set activeSessionId(String? id) {}
+  String get activeProfile => 'default';
+  set activeProfile(String profile) {}
 
-  Stream<String> streamChat(String message, {String? model, String? sessionId});
+  Stream<String> streamChat(String message, {String? model, String? sessionId, String? profile});
   Future<bool> stopGeneration({String? sessionId}) async => false;
   void dispose();
 
@@ -234,16 +245,17 @@ abstract class HermesConnection {
   String? get lastPluginError => null;
   Future<String> executeSlashCommand(String command, {String? sessionId}) async => '';
 
-  Future<List<ModelConfig>> getModels();
-  Future<void> setModelEnabled(String name, bool enabled, {String? provider});
-  Future<void> setModelProviderKey(String modelName, String provider, String key);
+  Future<List<ModelConfig>> getModels({String? profile});
+  Future<void> setModelEnabled(String name, bool enabled, {String? provider, String? profile});
+  Future<void> setModelProviderKey(String modelName, String provider, String key, {String? profile});
   Future<bool> setCustomInferenceEndpoint({
     required String baseUrl,
     required String apiKey,
     String? model,
     String? provider,
+    String? profile,
   }) async => false;
-  Future<Map<String, dynamic>> getModelInfo() async => {};
+  Future<Map<String, dynamic>> getModelInfo({String? profile}) async => {};
   Future<bool> respondApproval(String choice) async => false;
   String? get lastModelFetchError => null;
 
@@ -254,16 +266,20 @@ abstract class HermesConnection {
   Future<List<Map<String, dynamic>>> getProjectsList() async => [];
   Future<List<Map<String, dynamic>>> listWorkspaceFiles({String? subpath}) async => [];
   Future<String?> readWorkspaceFile(String path) async => null;
+  Future<bool> writeWorkspaceFile(String path, String content) async => false;
+  Future<List<Map<String, dynamic>>> getCronJobRuns(String id) async => [];
+  Future<Map<String, dynamic>?> getWhatsAppBridgeStatus() async => null;
 
   Future<List<SessionSummary>> getSessions({String? query});
-  Future<void> deleteSession(String id);
-  Future<void> renameSession(String id, String newTitle) async {}
-  Future<List<Map<String, dynamic>>> getSessionMessages(String sessionId);
+  Future<void> deleteSession(String id, {String? profile});
+  Future<void> renameSession(String id, String newTitle, {String? profile}) async {}
+  Future<List<Map<String, dynamic>>> getSessionMessages(String sessionId, {String? profile});
 
   Future<List<Map<String, dynamic>>> getSchedules();
   Future<void> createSchedule(Map<String, dynamic> schedule);
   Future<void> updateSchedule(String id, Map<String, dynamic> schedule);
   Future<void> deleteSchedule(String id);
+  Future<bool> triggerSchedule(String id) async => false;
 
   Future<Map<String, dynamic>> getSettings();
   Future<void> updateSettings(Map<String, dynamic> settings);
@@ -288,25 +304,35 @@ abstract class HermesConnection {
   Future<bool> approveAction({String? requestId}) async => false;
   Future<bool> denyAction({String? requestId}) async => false;
 
-  Future<String> readMemory();
+  Future<String> readMemory({String? profile});
   Future<String> readUserProfile();
-  Future<String> readSoul();
-  Future<void> writeMemory(String content);
+  Future<String> readSoul({String? profile});
+  Future<void> writeMemory(String content, {String? profile});
   Future<void> writeUserProfile(String content);
-  Future<void> writeSoul(String content);
+  Future<void> writeSoul(String content, {String? profile});
 
-  Future<Map<String, String>> readEnv();
-  Future<void> setEnvValue(String key, String value);
+  Future<List<AgentProfile>> listProfiles() async => [];
+  Future<bool> createProfile(
+    String name, {
+    String? cloneFrom,
+    String? description,
+    void Function(String error)? onError,
+  }) async =>
+      false;
+  Future<bool> deleteProfile(String name) async => false;
+  Future<bool> switchServerProfile(String name) async => false;
+  Future<bool> installSkill(String identifier, {String? profile}) async => false;
+  Future<List<ConfigHealthItem>> runConfigHealthAudit() async => [];
 
-  Future<String> getConfigValue(String path);
-  Future<void> setConfigValue(String path, String value);
+  Future<Map<String, String>> readEnv({String? profile});
+  Future<void> setEnvValue(String key, String value, {String? profile});
+
+  Future<String> getConfigValue(String path, {String? profile});
+  Future<void> setConfigValue(String path, String value, {String? profile});
 }
 
 class HermesConnectionFactory {
   static HermesConnection create(ConnectionConfig config) {
-    if (config.mode == ConnectionMode.remote) {
-      return RemoteConnection(config);
-    }
-    return SshTunnelConnection(config);
+    return RemoteConnection(config);
   }
 }

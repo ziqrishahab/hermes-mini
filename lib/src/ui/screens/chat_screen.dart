@@ -4,7 +4,10 @@ import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:go_router/go_router.dart";
 import "../../providers/chat_provider.dart";
 import "../../providers/connection_provider.dart";
+import "../../providers/profiles_provider.dart";
+import "../../providers/theme_provider.dart";
 import "../../services/hermes_connection.dart";
+import "../../services/local_database_service.dart";
 import "../../theme.dart";
 import "../widgets/neumorphic_skeleton.dart";
 import "../widgets/tactile_feedback.dart";
@@ -45,7 +48,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     super.dispose();
   }
 
-  void _openChatRoom(String title, {String? sessionId}) {
+  void _openChatRoom(String title, {String? sessionId, String? profile}) {
+    if (profile != null && profile.trim().isNotEmpty) {
+      ref.read(activeProfileProvider.notifier).setProfile(profile.trim());
+    }
     context.push('/chat-room', extra: {
       'title': title,
       'sessionId': sessionId,
@@ -58,7 +64,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
+        title: Text(
           "Delete Conversation?",
           style: TextStyle(
             color: HermesTokens.textPrimary,
@@ -68,7 +74,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
         content: Text(
           'Are you sure you want to delete "${s.title}"? This will permanently delete the session from Hermes.',
-          style: const TextStyle(
+          style: TextStyle(
             color: HermesTokens.textSecondary,
             fontSize: 13,
           ),
@@ -76,7 +82,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
@@ -96,7 +102,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final conn = ref.read(connectionProvider).valueOrNull;
       if (conn != null) {
         try {
-          await conn.deleteSession(s.id);
+          await conn.deleteSession(s.id, profile: s.profile);
+          await LocalDatabaseService.instance.deleteSession(s.id);
           ref.invalidate(sessionsProvider);
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
@@ -125,6 +132,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = ref.watch(isDarkProvider);
     final searchQuery = ref.watch(sessionsSearchQueryProvider);
     final sessionsAsync = ref.watch(sessionsProvider(searchQuery.isEmpty ? null : searchQuery));
     final generatingSessions = ref.watch(generatingSessionsProvider);
@@ -138,12 +146,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         backgroundColor: HermesTokens.bgPrimary,
         elevation: 0,
         centerTitle: true,
-        title: const Text(
+        title: Text(
           "MyPixie",
           style: TextStyle(
-            fontSize: 18,
+            fontSize: 17,
             fontWeight: FontWeight.w700,
             color: HermesTokens.textPrimary,
+            letterSpacing: -0.3,
           ),
         ),
       ),
@@ -154,12 +163,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
               child: Container(
-                decoration: NeumorphicDecoration.recessed(radius: 14),
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+                height: 46,
+                decoration: NeumorphicDecoration.recessed(
+                  radius: 14,
+                  isDark: isDark,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
                 child: TextField(
                   controller: _searchCtrl,
-                  style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
-                  decoration: const InputDecoration(
+                  style: TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
+                  decoration: InputDecoration(
                     hintText: "Search conversations...",
                     hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
                     prefixIcon: Icon(Icons.search, color: HermesTokens.textMuted, size: 18),
@@ -183,7 +196,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     flex: 6,
                     child: _workspacePill(context, activeWorkspace),
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Expanded(
                     flex: 4,
                     child: _reasoningPill(context, activeReasoning),
@@ -191,6 +204,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ],
               ),
             ),
+
+            // Offline Indicator Banner
+            if (ref.watch(connectionProvider).valueOrNull == null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: HermesTokens.bgTertiary,
+                    borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                    border: Border.all(color: HermesTokens.border, width: 0.8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.cloud_off_rounded, size: 16, color: HermesTokens.textMuted),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          "Offline Mode: Showing saved history",
+                          style: TextStyle(
+                            color: HermesTokens.textSecondary,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => context.push('/hermes-instance'),
+                        child: Text(
+                          "Connect",
+                          style: TextStyle(
+                            color: HermesTokens.accent,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
 
             // Session list
             Expanded(
@@ -234,11 +288,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       children: [
                         const Icon(Icons.error_outline, size: 40, color: HermesTokens.error),
                         const SizedBox(height: 12),
-                        const Text("Failed to load sessions", style: TextStyle(color: HermesTokens.textMuted)),
+                        Text("Failed to load sessions", style: TextStyle(color: HermesTokens.textMuted)),
                         const SizedBox(height: 8),
                         TextButton(
                           onPressed: () => ref.invalidate(sessionsProvider(null)),
-                          child: const Text("Retry", style: TextStyle(color: HermesTokens.accentText)),
+                          child: Text("Retry", style: TextStyle(color: HermesTokens.accentText)),
                         ),
                       ],
                     ),
@@ -257,9 +311,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: Container(
           width: 56,
           height: 56,
-          decoration: NeumorphicDecoration.circle(color: HermesTokens.accent),
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: HermesTokens.accent,
+            border: Border.all(
+              color: isDark ? const Color(0x33FFFFFF) : const Color(0x66FFFFFF),
+              width: 1.0,
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: isDark ? const Color(0x1FFFFFFF) : Colors.white.withValues(alpha: 0.6),
+                offset: const Offset(-4, -4),
+                blurRadius: 8,
+              ),
+              BoxShadow(
+                color: isDark ? Colors.black.withValues(alpha: 0.7) : const Color(0x401D4ED8),
+                offset: const Offset(4, 5),
+                blurRadius: 10,
+              ),
+            ],
+          ),
           child: const Center(
-            child: Icon(Icons.add, size: 24, color: Colors.white),
+            child: Icon(Icons.add_rounded, size: 26, color: Colors.white),
           ),
         ),
       ),
@@ -282,10 +355,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     width: 64,
                     height: 64,
                     decoration: NeumorphicDecoration.raised(radius: 20),
-                    child: const Icon(Icons.chat_bubble_outline_rounded, size: 28, color: HermesTokens.textMuted),
+                    child: Icon(Icons.chat_bubble_outline_rounded, size: 28, color: HermesTokens.textMuted),
                   ),
                   const SizedBox(height: 16),
-                  const Text(
+                  Text(
                     "No conversations yet",
                     style: TextStyle(
                       fontSize: 15,
@@ -294,7 +367,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ),
                   ),
                   const SizedBox(height: 6),
-                  const Text(
+                  Text(
                     "Pull down to refresh or tap + to start a chat",
                     style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                   ),
@@ -337,18 +410,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Widget _dateGroup(String date, List<SessionSummary> items) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.only(bottom: 14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.only(bottom: 6, left: 2),
+            padding: const EdgeInsets.only(bottom: 8, left: 4),
             child: Text(
-              date,
-              style: const TextStyle(
+              date.toUpperCase(),
+              style: TextStyle(
                 fontSize: 11,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w700,
                 color: HermesTokens.textMuted,
+                letterSpacing: 0.7,
               ),
             ),
           ),
@@ -358,9 +432,83 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     );
   }
 
+  String _sanitizeSnippet(String raw) {
+    if (raw.isEmpty) return "No messages yet";
+    var cleaned = raw
+        .replaceAll(RegExp(r'\[(INSTRUCTION|SYSTEM|TOOL|CONTEXT)[^\]]*\]', caseSensitive: false), '')
+        .replaceAll(RegExp(r'```[\s\S]*?```'), '[code]')
+        .replaceAll(RegExp(r'#+\s*'), '')
+        .replaceAll(RegExp(r'\*\*|__'), '')
+        .replaceAll(RegExp(r'\*|_'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return cleaned.isEmpty ? "No messages yet" : cleaned;
+  }
+
+  IconData _iconForSession(SessionSummary s) {
+    final lower = '${s.title} ${s.snippet}'.toLowerCase();
+    if (lower.contains('code') ||
+        lower.contains('script') ||
+        lower.contains('bug') ||
+        lower.contains('fix') ||
+        lower.contains('function') ||
+        lower.contains('dart') ||
+        lower.contains('python')) {
+      return Icons.code_rounded;
+    }
+    if (lower.contains('terminal') ||
+        lower.contains('bash') ||
+        lower.contains('command') ||
+        lower.contains('sh') ||
+        lower.contains('run') ||
+        lower.contains('exec')) {
+      return Icons.terminal_rounded;
+    }
+    if (lower.contains('schedule') ||
+        lower.contains('cron') ||
+        lower.contains('alarm') ||
+        lower.contains('timer') ||
+        lower.contains('task')) {
+      return Icons.schedule_rounded;
+    }
+    if (lower.contains('search') ||
+        lower.contains('find') ||
+        lower.contains('research') ||
+        lower.contains('web')) {
+      return Icons.travel_explore_rounded;
+    }
+    if (lower.contains('memory') ||
+        lower.contains('soul') ||
+        lower.contains('remember') ||
+        lower.contains('config')) {
+      return Icons.psychology_outlined;
+    }
+    return Icons.smart_toy_outlined;
+  }
+
+  String _formatModelBadge(String raw) {
+    if (raw.isEmpty) return 'Hermes 3';
+    final lower = raw.toLowerCase();
+    if (lower.contains('hermes')) return 'Hermes 3';
+    if (lower.contains('claude-3-5') || lower.contains('sonnet')) return 'Claude 3.5';
+    if (lower.contains('claude')) return 'Claude';
+    if (lower.contains('gpt-4o') || lower.contains('gpt4o')) return 'GPT-4o';
+    if (lower.contains('gpt')) return 'GPT-4';
+    if (lower.contains('llama-3.1')) return 'Llama 3.1';
+    if (lower.contains('llama')) return 'Llama 3';
+    if (lower.contains('qwen-2.5')) return 'Qwen 2.5';
+    if (lower.contains('qwen')) return 'Qwen';
+    if (lower.contains('deepseek')) return 'DeepSeek';
+    if (raw.length > 12) return raw.substring(0, 10);
+    return raw;
+  }
+
   Widget _sessionCard(SessionSummary s) {
     final time = _formatTime(DateTime.tryParse(s.startedAt));
     final isGenerating = ref.watch(generatingSessionsProvider).contains(s.id);
+    final isDark = ref.watch(isDarkProvider);
+    final drafts = ref.watch(chatDraftsProvider);
+    final sessionDraft = drafts[s.id];
     ref.watch(chatMessagesProvider);
     final cachedSnippet = ref.read(chatMessagesProvider.notifier).getLatestSnippetForSession(s.id);
     final displaySnippet = (cachedSnippet != null && cachedSnippet.isNotEmpty)
@@ -374,12 +522,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         return await _confirmDeleteSession(s);
       },
       background: Container(
-        margin: const EdgeInsets.only(bottom: 10),
+        margin: const EdgeInsets.only(bottom: 12),
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
         decoration: BoxDecoration(
           color: HermesTokens.error.withValues(alpha: 0.85),
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(18),
         ),
         child: const Row(
           mainAxisSize: MainAxisSize.min,
@@ -398,123 +546,244 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
       ),
       child: TactileContainer(
-        onTap: () => _openChatRoom(s.title, sessionId: s.id),
+        onTap: () => _openChatRoom(s.title, sessionId: s.id, profile: s.profile),
         pressedScale: 0.98,
         child: GestureDetector(
           onLongPress: () => _confirmDeleteSession(s),
           child: Container(
-            margin: const EdgeInsets.only(bottom: 10),
-          decoration: isGenerating
-              ? BoxDecoration(
-                  color: HermesTokens.bgElevated,
-                  borderRadius: BorderRadius.circular(16),
-                  border: Border.all(color: HermesTokens.accent.withValues(alpha: 0.6), width: 1.5),
-                  boxShadow: [
-                    BoxShadow(
-                      color: HermesTokens.accent.withValues(alpha: 0.18),
-                      blurRadius: 10,
-                      spreadRadius: 1,
+            margin: const EdgeInsets.only(bottom: 12),
+            decoration: isGenerating
+                ? BoxDecoration(
+                    color: isDark ? HermesColors.dark.bgSecondary : HermesColors.light.bgSecondary,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: HermesTokens.accent.withValues(alpha: 0.7),
+                      width: 1.2,
                     ),
-                    const BoxShadow(
-                      color: Colors.white,
-                      offset: Offset(-3, -3),
-                      blurRadius: 6,
-                    ),
-                  ],
-                )
-              : NeumorphicDecoration.raised(
-                  radius: 16,
-                  distance: 3.5,
-                  blur: 7,
-                ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(16),
-            child: IntrinsicHeight(
+                    boxShadow: [
+                      BoxShadow(
+                        color: HermesTokens.accent.withValues(alpha: 0.25),
+                        blurRadius: 12,
+                        spreadRadius: 1,
+                      ),
+                      BoxShadow(
+                        color: isDark ? const Color(0x14FFFFFF) : Colors.white,
+                        offset: const Offset(-5, -5),
+                        blurRadius: 10,
+                      ),
+                      BoxShadow(
+                        color: isDark ? const Color(0x99000000) : const Color(0x1F94A3B8),
+                        offset: const Offset(5, 5),
+                        blurRadius: 10,
+                      ),
+                    ],
+                  )
+                : NeumorphicDecoration.raised(
+                    radius: 18,
+                    distance: 5.0,
+                    blur: 10.0,
+                    isDark: isDark,
+                  ),
+            child: Padding(
+              padding: const EdgeInsets.all(14),
               child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Linear Modern Accent Strip
+                  // Tech Icon Tile: Raised Neumorphic Sub-Plate
                   Container(
-                    width: 4,
-                    decoration: BoxDecoration(
-                      color: isGenerating
-                          ? HermesTokens.accent
-                          : HermesTokens.accent.withValues(alpha: 0.28),
-                      borderRadius: const BorderRadius.horizontal(left: Radius.circular(16)),
+                    width: 42,
+                    height: 42,
+                    margin: const EdgeInsets.only(right: 14, top: 1),
+                    decoration: NeumorphicDecoration.raised(
+                      radius: 12,
+                      distance: 2.5,
+                      blur: 5.0,
+                      isDark: isDark,
+                    ),
+                    child: Center(
+                      child: Icon(
+                        _iconForSession(s),
+                        size: 20,
+                        color: isGenerating
+                            ? HermesTokens.accent
+                            : HermesTokens.accentText,
+                      ),
                     ),
                   ),
-                  // Content
+                  // Title, Snippet, Metadata Badges
                   Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Title + Time
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                s.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: HermesTokens.textPrimary,
+                                  letterSpacing: -0.2,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Text(
+                              time,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w500,
+                                color: HermesTokens.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+
+                        // Snippet
+                        if (isGenerating)
                           Row(
                             children: [
-                              Expanded(
-                                child: Text(
-                                  s.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w600,
-                                    color: HermesTokens.textPrimary,
-                                    letterSpacing: -0.1,
-                                  ),
+                              SizedBox(
+                                width: 11,
+                                height: 11,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 1.5,
+                                  color: HermesTokens.accent,
                                 ),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 6),
                               Text(
-                                time,
-                                style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                                "Thinking & responding...",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: HermesTokens.accent,
+                                  fontWeight: FontWeight.w600,
+                                  fontStyle: FontStyle.italic,
+                                ),
                               ),
                             ],
-                          ),
-                          const SizedBox(height: 5),
-                          if (isGenerating)
-                            const Row(
+                          )
+                        else if (sessionDraft != null && sessionDraft.trim().isNotEmpty)
+                          RichText(
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            text: TextSpan(
                               children: [
-                                SizedBox(
-                                  width: 10,
-                                  height: 10,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 1.5,
-                                    color: HermesTokens.accent,
-                                  ),
-                                ),
-                                SizedBox(width: 6),
-                                Text(
-                                  "Thinking & responding...",
+                                TextSpan(
+                                  text: "Draft: ",
                                   style: TextStyle(
                                     fontSize: 12,
-                                    color: HermesTokens.accent,
                                     fontWeight: FontWeight.w600,
-                                    fontStyle: FontStyle.italic,
+                                    color: HermesTokens.error,
                                   ),
                                 ),
-                              ],
-                            )
-                          else
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Text(
-                                    displaySnippet,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: HermesTokens.textMuted,
-                                      fontWeight: FontWeight.w400,
-                                    ),
+                                TextSpan(
+                                  text: sessionDraft.replaceAll('\n', ' ').trim(),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: HermesTokens.textSecondary,
+                                    fontWeight: FontWeight.w400,
+                                    height: 1.35,
                                   ),
                                 ),
                               ],
                             ),
-                        ],
-                      ),
+                          )
+                        else
+                          Text(
+                            _sanitizeSnippet(displaySnippet),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: HermesTokens.textSecondary,
+                              fontWeight: FontWeight.w400,
+                              height: 1.35,
+                            ),
+                          ),
+
+                        const SizedBox(height: 10),
+
+                        // Metadata Badges Row
+                        Row(
+                          children: [
+                            // Model Badge: Recessed Pill
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                              decoration: NeumorphicDecoration.recessed(
+                                radius: 7,
+                                isDark: isDark,
+                              ),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(
+                                    Icons.memory_rounded,
+                                    size: 11,
+                                    color: HermesTokens.accentText,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    _formatModelBadge(s.model),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: HermesTokens.textSecondary,
+                                      letterSpacing: 0.2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+
+                            // Message count chip: Recessed Pill
+                            if (s.messageCount > 0) ...[
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+                                decoration: NeumorphicDecoration.recessed(
+                                  radius: 7,
+                                  isDark: isDark,
+                                ),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.chat_bubble_outline_rounded,
+                                      size: 10.5,
+                                      color: HermesTokens.textMuted,
+                                    ),
+                                    const SizedBox(width: 4),
+                                    Text(
+                                      "${s.messageCount} msgs",
+                                      style: TextStyle(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                        color: HermesTokens.textMuted,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                            ],
+
+                            const Spacer(),
+
+                            // Subtle Chevron affordance
+                            Icon(
+                              Icons.chevron_right_rounded,
+                              size: 16,
+                              color: HermesTokens.textMuted.withValues(alpha: 0.5),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -523,9 +792,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   String _formatTime(DateTime? dt) {
     if (dt == null) return "";
@@ -560,24 +828,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       child: Container(
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
+        decoration: NeumorphicDecoration.raised(radius: 14, distance: 4.0, blur: 8.0, isDark: ref.watch(isDarkProvider)),
         child: Row(
           children: [
-            const Icon(Icons.folder_open_rounded, size: 15, color: HermesTokens.accent),
+            Icon(Icons.folder_open_rounded, size: 15, color: HermesTokens.accent),
             const SizedBox(width: 6),
             Expanded(
               child: Text(
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   color: HermesTokens.textPrimary,
                 ),
               ),
             ),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: HermesTokens.textMuted),
+            Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: HermesTokens.textMuted),
           ],
         ),
       ),
@@ -591,24 +859,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       child: Container(
         height: 36,
         padding: const EdgeInsets.symmetric(horizontal: 10),
-        decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
+        decoration: NeumorphicDecoration.raised(radius: 14, distance: 4.0, blur: 8.0, isDark: ref.watch(isDarkProvider)),
         child: Row(
           children: [
-            const Icon(Icons.psychology_outlined, size: 15, color: HermesTokens.accent),
+            Icon(Icons.psychology_outlined, size: 15, color: HermesTokens.accent),
             const SizedBox(width: 6),
             Expanded(
               child: Text(
                 effort.label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
                   color: HermesTokens.textPrimary,
                 ),
               ),
             ),
-            const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: HermesTokens.textMuted),
+            Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: HermesTokens.textMuted),
           ],
         ),
       ),
@@ -622,7 +890,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (ctx) => Container(
-        decoration: const BoxDecoration(
+        decoration: BoxDecoration(
           color: HermesTokens.bgElevated,
           borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
         ),
@@ -643,7 +911,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
               ),
               const SizedBox(height: 16),
-              const Text(
+              Text(
                 "Reasoning Effort",
                 style: TextStyle(
                   fontSize: 16,
@@ -652,7 +920,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
               ),
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 "Controls model thinking budget and depth of chain-of-thought tokens.",
                 style: TextStyle(
                   fontSize: 12,
@@ -709,7 +977,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                 const SizedBox(height: 2),
                                 Text(
                                   effort.description,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 11,
                                     color: HermesTokens.textMuted,
                                   ),
@@ -740,7 +1008,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       isScrollControlled: true,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setSheetState) => Container(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: HermesTokens.bgElevated,
             borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
@@ -764,7 +1032,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
+                    Text(
                       "Hermes Workspace",
                       style: TextStyle(
                         fontSize: 16,
@@ -773,7 +1041,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.sync_rounded, color: HermesTokens.textSecondary, size: 20),
+                      icon: Icon(Icons.sync_rounded, color: HermesTokens.textSecondary, size: 20),
                       tooltip: "Sync with Daemon",
                       onPressed: () async {
                         await ref.read(activeWorkspaceProvider.notifier).reload();
@@ -785,7 +1053,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ],
                 ),
                 const SizedBox(height: 4),
-                const Text(
+                Text(
                   "Root working directory for tool execution, file reading, and terminal bash commands.",
                   style: TextStyle(
                     fontSize: 12,
@@ -837,7 +1105,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                             color: HermesTokens.accent.withValues(alpha: 0.12),
                                             borderRadius: BorderRadius.circular(4),
                                           ),
-                                          child: const Text(
+                                          child: Text(
                                             "DEFAULT",
                                             style: TextStyle(
                                               fontSize: 9,
@@ -854,7 +1122,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                     ws.path.isNotEmpty ? ws.path : "Server process working directory (.)",
                                     maxLines: 1,
                                     overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(
+                                    style: TextStyle(
                                       fontSize: 11,
                                       color: HermesTokens.textMuted,
                                       fontFamily: 'monospace',
@@ -864,7 +1132,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               ),
                             ),
                             if (isSelected)
-                              const Icon(Icons.check_circle_rounded, size: 18, color: HermesTokens.accent),
+                              Icon(Icons.check_circle_rounded, size: 18, color: HermesTokens.accent),
                           ],
                         ),
                       ),
@@ -988,7 +1256,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             return Container(
               height: MediaQuery.of(context).size.height * 0.78,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 color: HermesTokens.bgElevated,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
               ),
@@ -1013,7 +1281,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Column(
+                          Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text(
@@ -1032,7 +1300,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             ],
                           ),
                           IconButton(
-                            icon: const Icon(Icons.close_rounded, size: 20, color: HermesTokens.textMuted),
+                            icon: Icon(Icons.close_rounded, size: 20, color: HermesTokens.textMuted),
                             onPressed: () => Navigator.of(pickerCtx).pop(),
                           ),
                         ],
@@ -1045,14 +1313,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         decoration: NeumorphicDecoration.recessed(radius: 10),
                         child: Row(
                           children: [
-                            const Icon(Icons.folder_open_rounded, size: 16, color: HermesTokens.accent),
+                            Icon(Icons.folder_open_rounded, size: 16, color: HermesTokens.accent),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
                                 currentDisplay,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontFamily: 'monospace',
                                   fontSize: 11,
                                   fontWeight: FontWeight.w600,
@@ -1082,7 +1350,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                           color: HermesTokens.bgTertiary.withValues(alpha: 0.5),
                                           borderRadius: BorderRadius.circular(10),
                                         ),
-                                        child: const Row(
+                                        child: Row(
                                           children: [
                                             Icon(Icons.arrow_upward_rounded, size: 16, color: HermesTokens.accent),
                                             SizedBox(width: 8),
@@ -1100,7 +1368,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                     ),
                                   ),
                                 if (items.isEmpty)
-                                  const Padding(
+                                  Padding(
                                     padding: EdgeInsets.symmetric(vertical: 30),
                                     child: Center(
                                       child: Text(
@@ -1151,7 +1419,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                                 ),
                                               ),
                                               if (isDir)
-                                                const Icon(
+                                                Icon(
                                                   Icons.chevron_right_rounded,
                                                   size: 16,
                                                   color: HermesTokens.textMuted,
@@ -1167,7 +1435,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     ),
                     Container(
                       padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         color: HermesTokens.bgElevated,
                         border: Border(top: BorderSide(color: HermesTokens.border, width: 0.5)),
                       ),
@@ -1235,7 +1503,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             return Container(
               height: MediaQuery.of(context).size.height * 0.82,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 color: HermesTokens.bgElevated,
                 borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
               ),
@@ -1263,7 +1531,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             width: 36,
                             height: 36,
                             decoration: NeumorphicDecoration.raised(radius: 10, distance: 1.5, blur: 3),
-                            child: const Icon(Icons.description_outlined, size: 18, color: HermesTokens.accent),
+                            child: Icon(Icons.description_outlined, size: 18, color: HermesTokens.accent),
                           ),
                           const SizedBox(width: 12),
                           Expanded(
@@ -1274,7 +1542,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   fileName,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 15,
                                     fontWeight: FontWeight.w700,
                                     color: HermesTokens.textPrimary,
@@ -1284,7 +1552,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   path,
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontFamily: 'monospace',
                                     fontSize: 10,
                                     color: HermesTokens.textMuted,
@@ -1295,7 +1563,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           ),
                           if (!isLoading && content.isNotEmpty)
                             IconButton(
-                              icon: const Icon(Icons.copy_rounded, size: 18, color: HermesTokens.textSecondary),
+                              icon: Icon(Icons.copy_rounded, size: 18, color: HermesTokens.textSecondary),
                               tooltip: "Copy content",
                               onPressed: () async {
                                 await Clipboard.setData(ClipboardData(text: content));
@@ -1307,13 +1575,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                               },
                             ),
                           IconButton(
-                            icon: const Icon(Icons.close_rounded, size: 20, color: HermesTokens.textMuted),
+                            icon: Icon(Icons.close_rounded, size: 20, color: HermesTokens.textMuted),
                             onPressed: () => Navigator.of(bCtx).pop(),
                           ),
                         ],
                       ),
                     ),
-                    const Divider(height: 1, color: HermesTokens.border),
+                    Divider(height: 1, color: HermesTokens.border),
                     Expanded(
                       child: isLoading
                           ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
@@ -1325,7 +1593,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   ),
                                 )
                               : content.isEmpty
-                                  ? const Center(
+                                  ? Center(
                                       child: Text("File is empty", style: TextStyle(color: HermesTokens.textMuted, fontSize: 12)),
                                     )
                                   : Container(
@@ -1337,7 +1605,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                           scrollDirection: Axis.horizontal,
                                           child: SelectableText(
                                             content,
-                                            style: const TextStyle(
+                                            style: TextStyle(
                                               fontFamily: 'monospace',
                                               fontSize: 12,
                                               color: HermesTokens.textPrimary,

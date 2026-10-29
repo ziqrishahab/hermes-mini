@@ -5,6 +5,8 @@ import "package:flutter/foundation.dart";
 import "package:dio/dio.dart";
 import "package:shared_preferences/shared_preferences.dart";
 import "../models/connection_config.dart";
+import "../models/agent_profile.dart";
+import "../models/config_health_item.dart";
 import "hermes_connection.dart";
 class RemoteConnection extends HermesConnection {
   final ConnectionConfig config;
@@ -15,8 +17,64 @@ class RemoteConnection extends HermesConnection {
   @override
   set activeSessionId(String? id) => _activeSessionId = id;
 
-  String? _customBaseUrl;
-  String? _customApiKey;
+  String _activeProfile = 'default';
+  @override
+  String get activeProfile => _activeProfile;
+  @override
+  set activeProfile(String profile) {
+    final clean = profile.trim();
+    _activeProfile = clean.isEmpty ? 'default' : clean;
+    _applyProfileCookie(_activeProfile);
+  }
+
+  String _normProfile(String? profile) {
+    if (profile != null && profile.trim().isNotEmpty) {
+      return profile.trim();
+    }
+    return _activeProfile.isNotEmpty ? _activeProfile : 'default';
+  }
+
+  String _baseUrlPrefKey(String profile) =>
+      profile == 'default' ? 'custom_inference_base_url' : 'custom_inference_base_url__$profile';
+
+  String _apiKeyPrefKey(String profile) =>
+      profile == 'default' ? 'custom_inference_api_key' : 'custom_inference_api_key__$profile';
+
+  String _selectedModelPrefKey(String profile) =>
+      profile == 'default' ? 'active_selected_model' : 'active_selected_model__$profile';
+
+  static bool _isMaskedSecret(String? val) {
+    if (val == null) return true;
+    final trimmed = val.trim();
+    if (trimmed.isEmpty) return true;
+    return RegExp(r'^\*+$').hasMatch(trimmed) || trimmed.contains('â€¢â€¢â€¢â€¢') || trimmed.contains('****');
+  }
+
+  void _applyProfileCookie(String profile) {
+    final clean = profile.trim().isEmpty ? 'default' : profile.trim();
+    final existing = (_cookieHeader ?? '')
+        .split(';')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty && !e.startsWith('hermes_profile='))
+        .toList();
+    existing.add('hermes_profile=$clean');
+    _cookieHeader = existing.join('; ');
+    try {
+      _dio.options.headers['Cookie'] = _cookieHeader;
+    } catch (_) {}
+  }
+
+  Map<String, dynamic>? _withProfile(String? profile, [Map<String, dynamic>? extra]) {
+    final p = _normProfile(profile);
+    final map = <String, dynamic>{
+      ...?extra,
+      if (p.isNotEmpty && p != 'default') 'profile': p,
+    };
+    return map.isEmpty ? null : map;
+  }
+
+  final Map<String, String> _customBaseUrlByProfile = {};
+  final Map<String, String> _customApiKeyByProfile = {};
 
   String? _cookieHeader;
   String? _accessToken;
@@ -46,6 +104,10 @@ class RemoteConnection extends HermesConnection {
     return false;
   }
 
+  /// Session source reported to Hermes so it resolves this client as its own
+  /// platform instead of defaulting to the terminal UI hint.
+  static const String clientSource = 'mobile';
+
   late final String _baseUrl;
   late final String _wsBaseUrl;
   String? _lastModelFetchError;
@@ -67,7 +129,7 @@ class RemoteConnection extends HermesConnection {
     _dio = Dio(BaseOptions(
       baseUrl: _baseUrl,
       connectTimeout: const Duration(seconds: 10),
-      receiveTimeout: const Duration(minutes: 5),
+      receiveTimeout: const Duration(minutes: 15),
       headers: {
         if (config.apiKey?.isNotEmpty ?? false)
           "Authorization": "Bearer ${config.apiKey}",
@@ -203,7 +265,29 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<List<Map<String, dynamic>>> getSessionMessages(String sessionId) async {
+  Future<List<Map<String, dynamic>>> getSessionMessages(String sessionId, {String? profile}) async {
+    try {
+      final res = await _dio.get(
+        "/api/sessions/$sessionId/messages",
+        queryParameters: _withProfile(profile),
+      );
+      dynamic raw = res.data;
+      if (raw is String) {
+        try {
+          raw = jsonDecode(raw);
+        } catch (_) {}
+      }
+      if (raw is Map) {
+        final list = (raw['messages'] as List<dynamic>?) ?? [];
+        final parsed = list.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        if (parsed.isNotEmpty) return parsed;
+      } else if (raw is List) {
+        final parsed = raw.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        if (parsed.isNotEmpty) return parsed;
+      }
+    } catch (_) {}
+
+    // If profile was not default and returned empty/404, also check default profile storage
     try {
       final res = await _dio.get("/api/sessions/$sessionId/messages");
       dynamic raw = res.data;
@@ -214,14 +298,19 @@ class RemoteConnection extends HermesConnection {
       }
       if (raw is Map) {
         final list = (raw['messages'] as List<dynamic>?) ?? [];
-        return list.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        final parsed = list.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        if (parsed.isNotEmpty) return parsed;
       } else if (raw is List) {
-        return raw.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        final parsed = raw.map((e) => (e is Map) ? Map<String, dynamic>.from(e) : <String, dynamic>{}).toList();
+        if (parsed.isNotEmpty) return parsed;
       }
     } catch (_) {}
 
     try {
-      final res = await _dio.get("/v1/sessions/$sessionId/messages");
+      final res = await _dio.get(
+        "/v1/sessions/$sessionId/messages",
+        queryParameters: _withProfile(profile),
+      );
       dynamic raw = res.data;
       if (raw is String) {
         try {
@@ -275,7 +364,7 @@ class RemoteConnection extends HermesConnection {
       final res = await _dio.get("/v1/platforms");
       if (res.data is Map) {
         final map = res.data as Map<String, dynamic>;
-        return map.entries.map((e) => {
+        return map.entries.map((e) => <String, dynamic>{
           'id': e.key,
           'name': e.key.isNotEmpty ? e.key[0].toUpperCase() + e.key.substring(1) : e.key,
           'enabled': e.value == true,
@@ -411,16 +500,19 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<String> readMemory() async {
+  Future<String> readMemory({String? profile}) async {
     try {
-      final res = await _dio.get("/api/fs/read-text?path=MEMORY.md");
+      final res = await _dio.get(
+        "/api/fs/read-text",
+        queryParameters: _withProfile(profile, {"path": "MEMORY.md"}),
+      );
       if (res.data is Map<String, dynamic> && res.data['text'] != null) {
         return res.data['text'].toString();
       }
     } catch (_) {}
 
     try {
-      final res = await _dio.get("/v1/memory");
+      final res = await _dio.get("/v1/memory", queryParameters: _withProfile(profile));
       final str = res.data.toString();
       if (!str.contains('<!doctype html>') && !str.contains('<html')) return str;
     } catch (_) {}
@@ -447,17 +539,25 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<void> writeMemory(String content) async {
+  Future<void> writeMemory(String content, {String? profile}) async {
     try {
-      final res = await _dio.post("/api/fs/write-text", data: {
-        "path": "MEMORY.md",
-        "content": content,
-      });
+      final res = await _dio.post(
+        "/api/fs/write-text",
+        queryParameters: _withProfile(profile),
+        data: {
+          "path": "MEMORY.md",
+          "content": content,
+        },
+      );
       if (res.statusCode == 200) return;
     } catch (_) {}
 
     try {
-      await _dio.put("/v1/memory", data: {"content": content});
+      await _dio.put(
+        "/v1/memory",
+        queryParameters: _withProfile(profile),
+        data: {"content": content},
+      );
     } catch (_) {}
   }
 
@@ -477,9 +577,10 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<String> readSoul() async {
+  Future<String> readSoul({String? profile}) async {
+    final targetProfile = (profile != null && profile.trim().isNotEmpty) ? profile.trim() : "default";
     try {
-      final res = await _dio.get("/api/profiles/default/soul");
+      final res = await _dio.get("/api/profiles/$targetProfile/soul");
       if (res.data is Map<String, dynamic> && res.data['content'] != null) {
         return res.data['content'].toString();
       }
@@ -502,9 +603,10 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<void> writeSoul(String content) async {
+  Future<void> writeSoul(String content, {String? profile}) async {
+    final targetProfile = (profile != null && profile.trim().isNotEmpty) ? profile.trim() : "default";
     try {
-      final res = await _dio.put("/api/profiles/default/soul", data: {"content": content});
+      final res = await _dio.put("/api/profiles/$targetProfile/soul", data: {"content": content});
       if (res.statusCode == 200) return;
     } catch (_) {}
 
@@ -514,9 +616,460 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<Map<String, String>> readEnv() async {
+  Future<List<AgentProfile>> listProfiles() async {
     try {
-      final res = await _dio.get("/v1/env");
+      final res = await _dio.get("/api/profiles");
+      if (res.data is Map<String, dynamic>) {
+        final list = res.data['profiles'];
+        if (list is List<dynamic>) {
+          return list
+              .whereType<Map<String, dynamic>>()
+              .map((j) => AgentProfile.fromJson(j))
+              .toList();
+        }
+      } else if (res.data is List<dynamic>) {
+        return (res.data as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map((j) => AgentProfile.fromJson(j))
+            .toList();
+      }
+    } catch (_) {}
+
+    // Fallback default profile if server does not have profiles endpoint yet
+    return const [
+      AgentProfile(
+        id: "default",
+        name: "Default Agent",
+        isDefault: true,
+      ),
+    ];
+  }
+
+  @override
+  Future<bool> createProfile(
+    String name, {
+    String? cloneFrom,
+    String? description,
+    void Function(String error)? onError,
+  }) async {
+    final safeName = AgentProfile.canonicalizeId(name);
+    if (safeName.isEmpty) {
+      onError?.call(
+        "Invalid profile identifier. Use lowercase letters, numbers, hyphens, and underscores.",
+      );
+      return false;
+    }
+    if (safeName == 'default') {
+      onError?.call("Cannot create a profile named 'default'.");
+      return false;
+    }
+    final srcProfile = (cloneFrom != null && cloneFrom.trim().isNotEmpty)
+        ? cloneFrom.trim()
+        : null;
+    try {
+      final payload = <String, dynamic>{
+        "name": safeName,
+        if (description != null && description.trim().isNotEmpty)
+          "description": description.trim(),
+        if (srcProfile != null) ...{
+          "clone": true,
+          "clone_from": srcProfile,
+          "clone_config": true,
+          "clone_all": true,
+        },
+      };
+      final res = await _dio.post(
+        "/api/profiles",
+        data: payload,
+        options: Options(validateStatus: (s) => (s ?? 500) < 500),
+      );
+      final ok = res.statusCode == 200 || res.statusCode == 201;
+      if (!ok) {
+        String errorMsg = "Failed to create profile";
+        if (res.data is Map && res.data['detail'] != null) {
+          errorMsg = res.data['detail'].toString();
+        } else if (res.data is String && (res.data as String).isNotEmpty) {
+          errorMsg = res.data as String;
+        }
+        debugPrint("createProfile failed (${res.statusCode}): $errorMsg");
+        onError?.call(errorMsg);
+        return false;
+      }
+      if (ok && srcProfile != null) {
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          final srcUrl = prefs.getString(_baseUrlPrefKey(srcProfile)) ?? '';
+          final srcKey = prefs.getString(_apiKeyPrefKey(srcProfile)) ?? '';
+          final srcModel = prefs.getString(_selectedModelPrefKey(srcProfile)) ?? '';
+          if (srcUrl.isNotEmpty) {
+            await prefs.setString(_baseUrlPrefKey(safeName), srcUrl);
+            _customBaseUrlByProfile[safeName] = srcUrl;
+          }
+          if (srcKey.isNotEmpty) {
+            await prefs.setString(_apiKeyPrefKey(safeName), srcKey);
+            _customApiKeyByProfile[safeName] = srcKey;
+          }
+          if (srcModel.isNotEmpty) {
+            await prefs.setString(_selectedModelPrefKey(safeName), srcModel);
+          }
+          if (srcUrl.isNotEmpty || srcKey.isNotEmpty) {
+            await setCustomInferenceEndpoint(
+              baseUrl: srcUrl,
+              apiKey: srcKey,
+              model: srcModel.isNotEmpty ? srcModel : null,
+              profile: safeName,
+            );
+          }
+        } catch (_) {}
+      }
+      return ok;
+    } on DioException catch (e) {
+      String errorMsg = "Network error while creating profile";
+      if (e.response?.data is Map && e.response?.data['detail'] != null) {
+        errorMsg = e.response!.data['detail'].toString();
+      } else if (e.message != null && e.message!.isNotEmpty) {
+        errorMsg = e.message!;
+      }
+      debugPrint("createProfile DioException: $errorMsg");
+      onError?.call(errorMsg);
+      return false;
+    } catch (e) {
+      final errorMsg = e.toString();
+      debugPrint("createProfile error: $errorMsg");
+      onError?.call(errorMsg);
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> deleteProfile(String name) async {
+    final safeName = name.trim();
+    if (safeName.isEmpty || safeName == 'default') return false;
+
+    bool deleted = false;
+    try {
+      final res = await _dio.delete(
+        "/api/profiles/${Uri.encodeComponent(safeName)}",
+        options: Options(validateStatus: (s) => (s ?? 500) < 500),
+      );
+      if (res.statusCode == 200 || res.statusCode == 204) {
+        deleted = true;
+      }
+    } catch (_) {}
+
+    if (!deleted) {
+      try {
+        final res = await _dio.delete(
+          "/api/profiles",
+          queryParameters: {"name": safeName, "profile": safeName},
+          data: {"name": safeName, "profile": safeName},
+          options: Options(validateStatus: (s) => (s ?? 500) < 500),
+        );
+        if (res.statusCode == 200 || res.statusCode == 204) {
+          deleted = true;
+        }
+      } catch (_) {}
+    }
+
+    if (deleted) {
+      _customBaseUrlByProfile.remove(safeName);
+      _customApiKeyByProfile.remove(safeName);
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.remove(_baseUrlPrefKey(safeName));
+        await prefs.remove(_apiKeyPrefKey(safeName));
+        await prefs.remove(_selectedModelPrefKey(safeName));
+      } catch (_) {}
+      if (_activeProfile == safeName) {
+        activeProfile = 'default';
+      }
+    }
+    return deleted;
+  }
+
+  /// Default `platform_hints.mobile` text written to a profile's config so
+  /// Hermes knows how to format replies for this client.
+  static const String mobilePlatformHint =
+      'You are chatting through a mobile app on an Android phone. The screen is '
+      'narrow and touch driven. Keep replies short and direct. Avoid wide tables '
+      'and long code blocks. Markdown is rendered by the app. There is no '
+      'attachment channel, so state a file path or URL in plain text.';
+
+  final Set<String> _platformHintChecked = {};
+
+  /// Writes `platform_hints.mobile` to the profile config when the user has
+  /// not set one yet. Never overwrites an existing entry. Runs once per profile
+  /// per connection and fails silently, for example on managed installs.
+  Future<bool> ensureMobilePlatformHint({String? profile}) async {
+    final p = _normProfile(profile);
+    if (!_platformHintChecked.add(p)) return false;
+    final quick = Options(
+      sendTimeout: const Duration(seconds: 4),
+      receiveTimeout: const Duration(seconds: 4),
+      validateStatus: (s) => true,
+    );
+    try {
+      final current = await _dio.get(
+        "/api/config",
+        queryParameters: _withProfile(p, {"include_defaults": false}),
+        options: quick,
+      );
+      if (current.statusCode != 200 || current.data is! Map) return false;
+      final hints = (current.data as Map)['platform_hints'];
+      if (hints is Map && hints[clientSource] != null) return false;
+
+      final res = await _dio.put(
+        "/api/config",
+        queryParameters: _withProfile(p),
+        data: {
+          "config": {
+            "platform_hints": {
+              clientSource: {"replace": mobilePlatformHint},
+            },
+          },
+          if (p != 'default') "profile": p,
+        },
+        options: quick,
+      );
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> switchServerProfile(String name) async {
+    final target = name.trim().isEmpty ? 'default' : name.trim();
+    activeProfile = target;
+    try {
+      final res = await _dio.post(
+        "/api/profile/switch",
+        data: {"profile": target, "name": target},
+        options: Options(
+          sendTimeout: const Duration(seconds: 4),
+          receiveTimeout: const Duration(seconds: 4),
+          validateStatus: (s) => true,
+        ),
+      );
+      final setCookies = res.headers['set-cookie'] ?? [];
+      if (setCookies.isNotEmpty) {
+        final existingMap = <String, String>{};
+        for (final part in (_cookieHeader ?? '').split(';')) {
+          final kv = part.trim();
+          final eq = kv.indexOf('=');
+          if (eq > 0) {
+            existingMap[kv.substring(0, eq)] = kv.substring(eq + 1);
+          }
+        }
+        for (final sc in setCookies) {
+          final firstPair = sc.split(';').first.trim();
+          final eq = firstPair.indexOf('=');
+          if (eq > 0) {
+            existingMap[firstPair.substring(0, eq)] = firstPair.substring(eq + 1);
+          }
+        }
+        existingMap['hermes_profile'] = target;
+        _cookieHeader = existingMap.entries.map((e) => '${e.key}=${e.value}').join('; ');
+        _dio.options.headers['Cookie'] = _cookieHeader;
+      }
+      return res.statusCode == 200;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> installSkill(String identifier, {String? profile}) async {
+    final safeId = identifier.trim();
+    if (safeId.isEmpty) return false;
+
+    // 1. Try REST API endpoint
+    try {
+      final payload = <String, dynamic>{
+        "name": safeId,
+        "source": safeId,
+        if (profile != null && profile.trim().isNotEmpty) "profile": profile.trim(),
+      };
+      final res = await _dio.post("/api/skills/install", data: payload);
+      if (res.statusCode == 200 || res.statusCode == 201) return true;
+    } catch (_) {}
+
+    // 2. Fallback to CLI slash command
+    try {
+      final pFlag = (profile != null && profile != "default") ? " -p $profile" : "";
+      await executeSlashCommand("/skills install $safeId --yes$pFlag");
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<List<ConfigHealthItem>> runConfigHealthAudit() async {
+    final issues = <ConfigHealthItem>[];
+
+    // 1. Check if backend has native diagnostic endpoint
+    try {
+      final res = await _dio.get("/api/config/health");
+      if (res.data is Map<String, dynamic> && res.data['issues'] is List<dynamic>) {
+        final list = (res.data['issues'] as List<dynamic>)
+            .whereType<Map<String, dynamic>>()
+            .map((j) => ConfigHealthItem.fromJson(j))
+            .toList();
+        if (list.isNotEmpty) return list;
+      }
+    } catch (_) {}
+
+    // 2. Gateway Reachability & Connection Check
+    try {
+      final pingStart = DateTime.now().millisecondsSinceEpoch;
+      final res = await _dio.get("/api/health");
+      final latency = DateTime.now().millisecondsSinceEpoch - pingStart;
+      if (res.statusCode == 200) {
+        issues.add(ConfigHealthItem(
+          title: "Gateway Connection",
+          description: "Gateway instance is online and responding (latency: ${latency}ms).",
+          severity: HealthSeverity.healthy,
+          category: "Network",
+        ));
+      } else {
+        issues.add(ConfigHealthItem(
+          title: "Gateway Status",
+          description: "Gateway returned non-standard status code: ${res.statusCode}.",
+          severity: HealthSeverity.warning,
+          category: "Network",
+        ));
+      }
+    } catch (e) {
+      issues.add(ConfigHealthItem(
+        title: "Gateway Connectivity",
+        description: "Unable to reach health endpoint directly: $e",
+        severity: HealthSeverity.warning,
+        category: "Network",
+      ));
+    }
+
+    // 3. Model Inference Provider Audit
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final customUrl = prefs.getString('custom_inference_base_url');
+      final customKey = prefs.getString('custom_inference_api_key');
+      if (customUrl != null && customUrl.isNotEmpty) {
+        if (customKey == null || customKey.trim().isEmpty) {
+          issues.add(const ConfigHealthItem(
+            title: "Model API Key",
+            description: "Custom inference URL configured but API Key is empty.",
+            severity: HealthSeverity.warning,
+            category: "Inference",
+            autoFixable: false,
+          ));
+        } else {
+          issues.add(const ConfigHealthItem(
+            title: "Model Inference Configuration",
+            description: "Inference provider endpoint and credential format verified.",
+            severity: HealthSeverity.healthy,
+            category: "Inference",
+          ));
+        }
+      } else {
+        issues.add(const ConfigHealthItem(
+          title: "Model Inference",
+          description: "Using instance default backend inference provider.",
+          severity: HealthSeverity.healthy,
+          category: "Inference",
+        ));
+      }
+    } catch (_) {}
+
+    // 4. Soul Persona Directives
+    try {
+      final soul = await readSoul();
+      if (soul.trim().isEmpty) {
+        issues.add(const ConfigHealthItem(
+          title: "Soul Persona File",
+          description: "SOUL.md is empty. Default agent instructions are active.",
+          severity: HealthSeverity.warning,
+          category: "Persona",
+          autoFixable: true,
+        ));
+      } else {
+        issues.add(ConfigHealthItem(
+          title: "Soul Persona File",
+          description: "SOUL.md loaded successfully (${soul.length} characters).",
+          severity: HealthSeverity.healthy,
+          category: "Persona",
+        ));
+      }
+    } catch (_) {}
+
+    // 5. MCP Servers Status
+    try {
+      final servers = await getMcpServers();
+      final enabledCount = servers.where((s) => s['enabled'] == true).length;
+      issues.add(ConfigHealthItem(
+        title: "MCP Servers",
+        description: "${servers.length} MCP servers configured ($enabledCount enabled).",
+        severity: HealthSeverity.healthy,
+        category: "Capabilities",
+      ));
+    } catch (_) {}
+
+    // 6. Memory Store
+    try {
+      final mem = await readMemory();
+      issues.add(ConfigHealthItem(
+        title: "Persistent Memory Store",
+        description: mem.isNotEmpty
+            ? "MEMORY.md verified (${mem.split('\n').length} lines)."
+            : "MEMORY.md is currently blank.",
+        severity: HealthSeverity.healthy,
+        category: "Storage",
+      ));
+    } catch (_) {}
+
+    return issues;
+  }
+
+  @override
+  Future<Map<String, String>> readEnv({String? profile}) async {
+    try {
+      final res = await _dio.get(
+        "/api/env",
+        queryParameters: _withProfile(profile),
+      );
+      final data = res.data;
+      if (data is Map<String, dynamic>) {
+        final nested = data['env'] ?? data['keys'];
+        if (nested is Map) {
+          return nested.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ''));
+        }
+        final varsList = data['variables'] ?? data['items'];
+        if (varsList is List) {
+          final out = <String, String>{};
+          for (final item in varsList) {
+            if (item is Map && item['key'] != null) {
+              out[item['key'].toString()] = item['value']?.toString() ?? '';
+            }
+          }
+          return out;
+        }
+        final out = <String, String>{};
+        data.forEach((k, v) {
+          if (v is String || v is num || v is bool) {
+            out[k] = v.toString();
+          } else if (v is Map && v['value'] != null) {
+            out[k] = v['value'].toString();
+          }
+        });
+        if (out.isNotEmpty) return out;
+      }
+    } catch (_) {}
+
+    try {
+      final res = await _dio.get(
+        "/v1/env",
+        queryParameters: _withProfile(profile),
+      );
       if (res.data is Map<String, dynamic>) {
         final map = res.data as Map<String, dynamic>;
         return map.map((k, v) => MapEntry(k, v.toString()));
@@ -526,16 +1079,54 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<void> setEnvValue(String key, String value) async {
+  Future<void> setEnvValue(String key, String value, {String? profile}) async {
+    final targetProfile = _normProfile(profile);
+    final payload = <String, dynamic>{
+      "key": key,
+      "value": value,
+      if (targetProfile != 'default') "profile": targetProfile,
+    };
+
     try {
-      await _dio.put("/v1/env/$key", data: {"value": value});
+      final res = await _dio.put(
+        "/api/env",
+        queryParameters: _withProfile(targetProfile),
+        data: payload,
+        options: Options(validateStatus: (s) => (s ?? 500) < 500),
+      );
+      if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204) {
+        return;
+      }
+    } catch (_) {}
+
+    try {
+      final res = await _dio.post(
+        "/api/env",
+        queryParameters: _withProfile(targetProfile),
+        data: payload,
+        options: Options(validateStatus: (s) => (s ?? 500) < 500),
+      );
+      if (res.statusCode == 200 || res.statusCode == 201 || res.statusCode == 204) {
+        return;
+      }
+    } catch (_) {}
+
+    try {
+      await _dio.put(
+        "/v1/env/$key",
+        queryParameters: _withProfile(targetProfile),
+        data: {"value": value},
+      );
     } catch (_) {}
   }
 
   @override
-  Future<String> getConfigValue(String path) async {
+  Future<String> getConfigValue(String path, {String? profile}) async {
     try {
-      final res = await _dio.get("/api/model/info");
+      final res = await _dio.get(
+        "/api/model/info",
+        queryParameters: _withProfile(profile),
+      );
       if (res.data is Map<String, dynamic>) {
         final bUrl = res.data['base_url'] ?? res.data['effective_base_url'];
         if (bUrl != null && bUrl.toString().isNotEmpty) {
@@ -545,7 +1136,10 @@ class RemoteConnection extends HermesConnection {
     } catch (_) {}
 
     try {
-      final res = await _dio.get("/v1/config/$path");
+      final res = await _dio.get(
+        "/v1/config/$path",
+        queryParameters: _withProfile(profile),
+      );
       final str = res.data.toString();
       if (!str.contains('<!doctype html>')) return str;
     } catch (_) {}
@@ -553,9 +1147,12 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<Map<String, dynamic>> getModelInfo() async {
+  Future<Map<String, dynamic>> getModelInfo({String? profile}) async {
     try {
-      final res = await _dio.get("/api/model/info");
+      final res = await _dio.get(
+        "/api/model/info",
+        queryParameters: _withProfile(profile),
+      );
       if (res.data is Map<String, dynamic>) {
         return Map<String, dynamic>.from(res.data);
       }
@@ -659,21 +1256,75 @@ class RemoteConnection extends HermesConnection {
     required String apiKey,
     String? model,
     String? provider,
+    String? profile,
   }) async {
+    final targetProfile = _normProfile(profile);
     final cleanUrl = baseUrl.trim();
     final cleanKey = apiKey.trim();
-    _customBaseUrl = cleanUrl;
-    _customApiKey = cleanKey;
+    _customBaseUrlByProfile[targetProfile] = cleanUrl;
+    if (cleanKey.isNotEmpty) {
+      _customApiKeyByProfile[targetProfile] = cleanKey;
+    }
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('custom_inference_base_url', cleanUrl);
+      await prefs.setString(_baseUrlPrefKey(targetProfile), cleanUrl);
       if (cleanKey.isNotEmpty) {
-        await prefs.setString('custom_inference_api_key', cleanKey);
+        await prefs.setString(_apiKeyPrefKey(targetProfile), cleanKey);
       }
     } catch (_) {}
 
-    final fetched = await fetchRemoteEndpointModels(cleanUrl, cleanKey);
+    final lowerUrl = cleanUrl.toLowerCase();
+    final lowerProv = (provider ?? '').trim().toLowerCase();
+    final isOpenRouter = lowerUrl.contains('openrouter') || lowerProv == 'openrouter';
+    final isAnthropic = lowerUrl.contains('anthropic') || lowerProv == 'anthropic';
+    final isDeepSeek = lowerUrl.contains('deepseek') || lowerProv == 'deepseek';
+
+    String prov = (provider ?? '').trim();
+    if (prov.isEmpty || prov.toLowerCase() == 'custom' || prov.toLowerCase().startsWith('custom:')) {
+      if (isOpenRouter) {
+        prov = 'openrouter';
+      } else if (isAnthropic) {
+        prov = 'anthropic';
+      } else if (isDeepSeek) {
+        prov = 'deepseek';
+      } else {
+        prov = 'custom';
+      }
+    }
+
+    // Persist secret credentials into the target profile's .env on Hermes backend
+    try {
+      if (isOpenRouter) {
+        if (cleanKey.isNotEmpty) {
+          await setEnvValue('OPENROUTER_API_KEY', cleanKey, profile: targetProfile);
+        }
+      } else if (isAnthropic) {
+        if (cleanKey.isNotEmpty) {
+          await setEnvValue('ANTHROPIC_API_KEY', cleanKey, profile: targetProfile);
+        }
+      } else if (isDeepSeek) {
+        if (cleanUrl.isNotEmpty) {
+          await setEnvValue('DEEPSEEK_BASE_URL', cleanUrl, profile: targetProfile);
+        }
+        if (cleanKey.isNotEmpty) {
+          await setEnvValue('DEEPSEEK_API_KEY', cleanKey, profile: targetProfile);
+        }
+      } else {
+        if (cleanUrl.isNotEmpty) {
+          await setEnvValue('CUSTOM_BASE_URL', cleanUrl, profile: targetProfile);
+          await setEnvValue('OPENAI_BASE_URL', cleanUrl, profile: targetProfile);
+        }
+        if (cleanKey.isNotEmpty) {
+          await setEnvValue('CUSTOM_API_KEY', cleanKey, profile: targetProfile);
+          await setEnvValue('OPENAI_API_KEY', cleanKey, profile: targetProfile);
+        }
+      }
+    } catch (_) {}
+
+    final fetched = cleanUrl.isNotEmpty
+        ? await fetchRemoteEndpointModels(cleanUrl, cleanKey)
+        : <String>[];
 
     String m = model?.trim() ?? '';
     if (m.isEmpty) {
@@ -681,7 +1332,7 @@ class RemoteConnection extends HermesConnection {
         m = fetched.contains('gpt-4o') ? 'gpt-4o' : fetched.first;
       } else {
         try {
-          final info = await getModelInfo();
+          final info = await getModelInfo(profile: targetProfile);
           m = info['model']?.toString() ?? '';
         } catch (_) {}
       }
@@ -690,21 +1341,25 @@ class RemoteConnection extends HermesConnection {
       m = fetched.isNotEmpty ? fetched.first : 'gpt-4o';
     }
 
-    final isOpenRouter = cleanUrl.toLowerCase().contains('openrouter') ||
-        (provider?.trim().toLowerCase() == 'openrouter');
-    String prov = provider?.trim() ?? '';
-    if (prov.isEmpty || prov.toLowerCase() == 'custom' || prov.toLowerCase().startsWith('custom:')) {
-      prov = isOpenRouter ? 'openrouter' : 'custom';
-    }
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_selectedModelPrefKey(targetProfile), m);
+    } catch (_) {}
 
     try {
-      final res = await _dio.post("/api/model/set", data: {
+      final payload = <String, dynamic>{
         "scope": "main",
         "provider": prov,
         "model": m,
-        if (!isOpenRouter) "base_url": cleanUrl,
+        if (!isOpenRouter && cleanUrl.isNotEmpty) "base_url": cleanUrl,
         if (cleanKey.isNotEmpty) "api_key": cleanKey,
-      });
+        if (targetProfile != 'default') "profile": targetProfile,
+      };
+      final res = await _dio.post(
+        "/api/model/set",
+        queryParameters: _withProfile(targetProfile),
+        data: payload,
+      );
       if (res.statusCode == 200) return true;
     } catch (_) {}
 
@@ -712,10 +1367,11 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<void> setConfigValue(String path, String value) async {
+  Future<void> setConfigValue(String path, String value, {String? profile}) async {
+    final targetProfile = _normProfile(profile);
     final cleanVal = value.trim();
     if (cleanVal.startsWith('http://') || cleanVal.startsWith('https://')) {
-      await setCustomInferenceEndpoint(baseUrl: cleanVal, apiKey: '');
+      await setCustomInferenceEndpoint(baseUrl: cleanVal, apiKey: '', profile: targetProfile);
       return;
     }
 
@@ -723,7 +1379,10 @@ class RemoteConnection extends HermesConnection {
       String currentModel = "gpt-4o";
       String currentProvider = "custom";
       try {
-        final info = await _dio.get("/api/model/info");
+        final info = await _dio.get(
+          "/api/model/info",
+          queryParameters: _withProfile(targetProfile),
+        );
         if (info.data is Map<String, dynamic>) {
           currentModel = info.data['model']?.toString() ?? currentModel;
           final cp = info.data['provider']?.toString();
@@ -733,27 +1392,37 @@ class RemoteConnection extends HermesConnection {
         }
       } catch (_) {}
 
-      final res = await _dio.post("/api/model/set", data: {
-        "scope": "main",
-        "provider": currentProvider,
-        "model": currentModel,
-        "base_url": value,
-      });
+      final res = await _dio.post(
+        "/api/model/set",
+        queryParameters: _withProfile(targetProfile),
+        data: {
+          "scope": "main",
+          "provider": currentProvider,
+          "model": currentModel,
+          "base_url": value,
+          if (targetProfile != 'default') "profile": targetProfile,
+        },
+      );
       if (res.statusCode == 200) return;
     } catch (_) {}
 
     try {
-      await _dio.put("/v1/config/$path", data: {"value": value});
+      await _dio.put(
+        "/v1/config/$path",
+        queryParameters: _withProfile(targetProfile),
+        data: {"value": value},
+      );
     } catch (_) {}
   }
 
   @override
-  Stream<String> streamChat(String message, {String? model, String? sessionId}) async* {
+  Stream<String> streamChat(String message, {String? model, String? sessionId, String? profile}) async* {
+    final effectiveProfile = _normProfile(profile);
     String? effectiveModel = model;
     if (effectiveModel == null || effectiveModel.isEmpty || effectiveModel == '...' || effectiveModel == 'hermes-agent') {
       try {
         final prefs = await SharedPreferences.getInstance();
-        final saved = prefs.getString('active_selected_model');
+        final saved = prefs.getString(_selectedModelPrefKey(effectiveProfile));
         if (saved != null && saved.isNotEmpty) {
           effectiveModel = saved;
         }
@@ -771,9 +1440,12 @@ class RemoteConnection extends HermesConnection {
         await authenticate();
       }
 
+      await switchServerProfile(effectiveProfile);
+      await ensureMobilePlatformHint(profile: effectiveProfile);
+
       if (effectiveModel != null && effectiveModel.isNotEmpty) {
         try {
-          await setModelEnabled(effectiveModel, true);
+          await setModelEnabled(effectiveModel, true, profile: effectiveProfile);
         } catch (_) {}
       }
 
@@ -781,7 +1453,10 @@ class RemoteConnection extends HermesConnection {
       try {
         final ticketRes = await _dio.post(
           "/api/auth/ws-ticket",
-          data: {},
+          queryParameters: _withProfile(effectiveProfile),
+          data: {
+            if (effectiveProfile != 'default') "profile": effectiveProfile,
+          },
           options: Options(validateStatus: (s) => true),
         );
         if (ticketRes.statusCode == 200 && ticketRes.data is Map) {
@@ -789,14 +1464,18 @@ class RemoteConnection extends HermesConnection {
         }
       } catch (_) {}
 
+      final profileQuery = effectiveProfile != 'default'
+          ? '&profile=${Uri.encodeQueryComponent(effectiveProfile)}'
+          : '';
       final String wsUri;
       if (wsTicket != null && wsTicket.isNotEmpty) {
-        wsUri = '$_wsBaseUrl?ticket=${Uri.encodeQueryComponent(wsTicket)}';
+        wsUri = '$_wsBaseUrl?ticket=${Uri.encodeQueryComponent(wsTicket)}$profileQuery';
       } else {
         final token = _accessToken ?? config.apiKey ?? '';
-        wsUri = '$_wsBaseUrl?token=${Uri.encodeQueryComponent(token)}';
+        wsUri = '$_wsBaseUrl?token=${Uri.encodeQueryComponent(token)}$profileQuery';
       }
 
+      _applyProfileCookie(effectiveProfile);
       final wsHeaders = <String, dynamic>{};
       if (_cookieHeader != null) wsHeaders['Cookie'] = _cookieHeader;
       final effectiveToken = _accessToken ?? config.apiKey;
@@ -875,6 +1554,7 @@ class RemoteConnection extends HermesConnection {
                 "params": {
                   "session_id": liveSessionId,
                   "text": message,
+                  if (effectiveProfile != 'default') "profile": effectiveProfile,
                 },
               }));
               return;
@@ -891,6 +1571,7 @@ class RemoteConnection extends HermesConnection {
                 "params": {
                   "session_id": liveSessionId,
                   "text": message,
+                  if (effectiveProfile != 'default') "profile": effectiveProfile,
                 },
               }));
               return;
@@ -986,7 +1667,10 @@ class RemoteConnection extends HermesConnection {
                   "jsonrpc": "2.0",
                   "id": 1001,
                   "method": "session.create",
-                  "params": {},
+                  "params": {
+                    "source": clientSource,
+                    if (effectiveProfile != 'default') "profile": effectiveProfile,
+                  },
                 }));
                 return;
               }
@@ -1016,14 +1700,21 @@ class RemoteConnection extends HermesConnection {
           "jsonrpc": "2.0",
           "id": 1000,
           "method": "session.resume",
-          "params": {"session_id": targetSession},
+          "params": {
+            "session_id": targetSession,
+            "source": clientSource,
+            if (effectiveProfile != 'default') "profile": effectiveProfile,
+          },
         }));
       } else {
         ws.add(jsonEncode({
           "jsonrpc": "2.0",
           "id": 1001,
           "method": "session.create",
-          "params": {},
+          "params": {
+            "source": clientSource,
+            if (effectiveProfile != 'default') "profile": effectiveProfile,
+          },
         }));
       }
 
@@ -1360,42 +2051,59 @@ class RemoteConnection extends HermesConnection {
   }
   // -- Models --
   @override
-  Future<List<ModelConfig>> getModels() async {
+  Future<List<ModelConfig>> getModels({String? profile}) async {
+    final targetProfile = _normProfile(profile);
     String currentModel = '';
     String currentProvider = '';
-    String customBaseUrl = _customBaseUrl ?? '';
-    String customApiKey = _customApiKey ?? '';
+    String customBaseUrl = _customBaseUrlByProfile[targetProfile] ?? '';
+    String customApiKey = _customApiKeyByProfile[targetProfile] ?? '';
 
     if (customBaseUrl.isEmpty || customApiKey.isEmpty) {
       try {
         final prefs = await SharedPreferences.getInstance();
         if (customBaseUrl.isEmpty) {
-          customBaseUrl = prefs.getString('custom_inference_base_url') ?? '';
+          customBaseUrl = prefs.getString(_baseUrlPrefKey(targetProfile)) ?? '';
         }
         if (customApiKey.isEmpty) {
-          customApiKey = prefs.getString('custom_inference_api_key') ?? '';
+          customApiKey = prefs.getString(_apiKeyPrefKey(targetProfile)) ?? '';
         }
       } catch (_) {}
     }
 
     try {
-      final info = await _dio.get("/api/model/info");
+      final info = await _dio.get(
+        "/api/model/info",
+        queryParameters: _withProfile(targetProfile),
+      );
       if (info.data is Map<String, dynamic>) {
         currentModel = info.data['model']?.toString() ?? '';
         currentProvider = info.data['provider']?.toString() ?? '';
         final bUrl = info.data['base_url']?.toString() ?? '';
-        if (bUrl.isNotEmpty) customBaseUrl = bUrl;
+        if (bUrl.isNotEmpty && customBaseUrl.isEmpty) {
+          customBaseUrl = bUrl;
+        }
       }
     } catch (_) {}
 
     if (customBaseUrl.isEmpty || customApiKey.isEmpty) {
       try {
-        final env = await readEnv();
+        final env = await readEnv(profile: targetProfile);
         if (customBaseUrl.isEmpty) {
-          customBaseUrl = env['CUSTOM_BASE_URL'] ?? env['DEEPSEEK_BASE_URL'] ?? env['OPENAI_BASE_URL'] ?? '';
+          final envUrl = env['CUSTOM_BASE_URL'] ?? env['DEEPSEEK_BASE_URL'] ?? env['OPENAI_BASE_URL'] ?? '';
+          if (envUrl.isNotEmpty && !_isMaskedSecret(envUrl)) {
+            customBaseUrl = envUrl;
+          }
         }
         if (customApiKey.isEmpty) {
-          customApiKey = env['CUSTOM_API_KEY'] ?? env['DEEPSEEK_API_KEY'] ?? env['OPENAI_API_KEY'] ?? '';
+          final envKey = env['CUSTOM_API_KEY'] ??
+              env['OPENROUTER_API_KEY'] ??
+              env['ANTHROPIC_API_KEY'] ??
+              env['DEEPSEEK_API_KEY'] ??
+              env['OPENAI_API_KEY'] ??
+              '';
+          if (envKey.isNotEmpty && !_isMaskedSecret(envKey)) {
+            customApiKey = envKey;
+          }
         }
       } catch (_) {}
     }
@@ -1403,7 +2111,7 @@ class RemoteConnection extends HermesConnection {
     String selectedModel = '';
     try {
       final prefs = await SharedPreferences.getInstance();
-      selectedModel = prefs.getString('active_selected_model') ?? '';
+      selectedModel = prefs.getString(_selectedModelPrefKey(targetProfile)) ?? '';
     } catch (_) {}
     if (selectedModel.isEmpty) {
       selectedModel = currentModel;
@@ -1420,6 +2128,10 @@ class RemoteConnection extends HermesConnection {
       final lowerUrl = customBaseUrl.toLowerCase();
       if (lowerUrl.contains('openrouter')) {
         displayProvider = 'OpenRouter';
+      } else if (lowerUrl.contains('anthropic')) {
+        displayProvider = 'Anthropic';
+      } else if (lowerUrl.contains('deepseek')) {
+        displayProvider = 'DeepSeek';
       } else if (lowerUrl.contains('localhost') || lowerUrl.contains('127.0.0.1')) {
         displayProvider = 'Local Server';
       } else {
@@ -1472,7 +2184,10 @@ class RemoteConnection extends HermesConnection {
 
     // 2. If using standard aggregator (e.g. OpenRouter), fetch only that provider's models
     try {
-      final res = await _dio.get("/api/model/options");
+      final res = await _dio.get(
+        "/api/model/options",
+        queryParameters: _withProfile(targetProfile),
+      );
       if (res.data is Map<String, dynamic>) {
         final optModel = res.data['model'] as String? ?? currentModel;
         final optProvider = res.data['provider'] as String? ?? (currentProvider.isNotEmpty ? currentProvider : 'openrouter');
@@ -1541,85 +2256,177 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  Future<void> setModelEnabled(String name, bool enabled, {String? provider}) async {
-    String customBaseUrl = _customBaseUrl ?? '';
-    String customApiKey = _customApiKey ?? '';
+  Future<void> setModelEnabled(String name, bool enabled, {String? provider, String? profile}) async {
+    final targetProfile = _normProfile(profile);
+    String customBaseUrl = _customBaseUrlByProfile[targetProfile] ?? '';
+    String customApiKey = _customApiKeyByProfile[targetProfile] ?? '';
     try {
       final prefs = await SharedPreferences.getInstance();
       if (customBaseUrl.isEmpty) {
-        customBaseUrl = prefs.getString('custom_inference_base_url') ?? '';
+        customBaseUrl = prefs.getString(_baseUrlPrefKey(targetProfile)) ?? '';
       }
       if (customApiKey.isEmpty) {
-        customApiKey = prefs.getString('custom_inference_api_key') ?? '';
+        customApiKey = prefs.getString(_apiKeyPrefKey(targetProfile)) ?? '';
       }
-      await prefs.setString('active_selected_model', name);
+      await prefs.setString(_selectedModelPrefKey(targetProfile), name);
     } catch (_) {}
 
     if (customBaseUrl.isEmpty || customApiKey.isEmpty) {
       try {
-        final env = await readEnv();
+        final env = await readEnv(profile: targetProfile);
         if (customBaseUrl.isEmpty) {
-          customBaseUrl = env['CUSTOM_BASE_URL'] ?? env['DEEPSEEK_BASE_URL'] ?? env['OPENAI_BASE_URL'] ?? '';
+          final envUrl = env['CUSTOM_BASE_URL'] ?? env['DEEPSEEK_BASE_URL'] ?? env['OPENAI_BASE_URL'] ?? '';
+          if (envUrl.isNotEmpty && !_isMaskedSecret(envUrl)) {
+            customBaseUrl = envUrl;
+          }
         }
         if (customApiKey.isEmpty) {
-          customApiKey = env['CUSTOM_API_KEY'] ?? env['DEEPSEEK_API_KEY'] ?? env['OPENAI_API_KEY'] ?? '';
+          final envKey = env['CUSTOM_API_KEY'] ??
+              env['OPENROUTER_API_KEY'] ??
+              env['ANTHROPIC_API_KEY'] ??
+              env['DEEPSEEK_API_KEY'] ??
+              env['OPENAI_API_KEY'] ??
+              '';
+          if (envKey.isNotEmpty && !_isMaskedSecret(envKey)) {
+            customApiKey = envKey;
+          }
+        }
+      } catch (_) {}
+    }
+
+    String existingProvider = '';
+    try {
+      final infoRes = await _dio.get(
+        "/api/model/info",
+        queryParameters: _withProfile(targetProfile),
+      );
+      if (infoRes.data is Map<String, dynamic>) {
+        existingProvider = infoRes.data['provider']?.toString() ?? '';
+        final bUrl = infoRes.data['base_url']?.toString() ?? '';
+        if (customBaseUrl.isEmpty && bUrl.isNotEmpty) customBaseUrl = bUrl;
+      }
+    } catch (_) {}
+    if (existingProvider.isEmpty && targetProfile != 'default') {
+      try {
+        final defInfo = await _dio.get("/api/model/info");
+        if (defInfo.data is Map<String, dynamic>) {
+          existingProvider = defInfo.data['provider']?.toString() ?? '';
+          final bUrl = defInfo.data['base_url']?.toString() ?? '';
+          if (customBaseUrl.isEmpty && bUrl.isNotEmpty) customBaseUrl = bUrl;
         }
       } catch (_) {}
     }
 
     String p = provider?.trim() ?? '';
-    final isOpenRouter = customBaseUrl.toLowerCase().contains('openrouter') ||
-        p.toLowerCase() == 'openrouter';
-    final isCustom = !isOpenRouter && (customBaseUrl.isNotEmpty ||
-        p.toLowerCase() == 'custom' ||
-        p.toLowerCase().startsWith('custom:'));
+    if (p.isEmpty && existingProvider.isNotEmpty) {
+      p = existingProvider;
+    }
+    final lowerUrl = customBaseUrl.toLowerCase();
+    final lowerP = p.toLowerCase();
+    final isOpenRouter = lowerUrl.contains('openrouter') || lowerP == 'openrouter';
+    final isAnthropic = lowerUrl.contains('anthropic') || lowerP == 'anthropic';
+    final isDeepSeek = lowerUrl.contains('deepseek') || lowerP == 'deepseek';
+    final isCustom = !isOpenRouter && !isAnthropic && !isDeepSeek && (customBaseUrl.isNotEmpty ||
+        lowerP == 'custom' ||
+        lowerP.startsWith('custom:'));
 
-    final targetProvider = isOpenRouter
-        ? 'openrouter'
-        : (isCustom ? 'custom' : (p.isNotEmpty ? p : 'openrouter'));
+    final String targetProvider;
+    if (isOpenRouter) {
+      targetProvider = 'openrouter';
+    } else if (isAnthropic) {
+      targetProvider = 'anthropic';
+    } else if (isDeepSeek) {
+      targetProvider = 'deepseek';
+    } else if (isCustom) {
+      targetProvider = 'custom';
+    } else {
+      targetProvider = p.isNotEmpty ? p : 'openrouter';
+    }
 
     try {
-      final res = await _dio.post("/api/model/set", data: {
-        "scope": "main",
-        "provider": targetProvider,
-        "model": name,
-        if (isCustom && customBaseUrl.isNotEmpty) "base_url": customBaseUrl,
-        if (customApiKey.isNotEmpty) "api_key": customApiKey,
-      });
+      final res = await _dio.post(
+        "/api/model/set",
+        queryParameters: _withProfile(targetProfile),
+        data: {
+          "scope": "main",
+          "provider": targetProvider,
+          "model": name,
+          if (isCustom && customBaseUrl.isNotEmpty) "base_url": customBaseUrl,
+          if (customApiKey.isNotEmpty) "api_key": customApiKey,
+          if (targetProfile != 'default') "profile": targetProfile,
+        },
+      );
       if (res.statusCode == 200) return;
     } catch (_) {}
 
     try {
-      await _dio.patch("/v1/models/$name", data: {"enabled": enabled});
+      await _dio.patch(
+        "/v1/models/$name",
+        queryParameters: _withProfile(targetProfile),
+        data: {"enabled": enabled},
+      );
     } catch (_) {}
   }
 
   @override
-  Future<void> setModelProviderKey(String modelName, String provider, String key) async {
+  Future<void> setModelProviderKey(String modelName, String provider, String key, {String? profile}) async {
+    final targetProfile = _normProfile(profile);
+    final cleanKey = key.trim();
     String p = provider.trim();
     if (p.isEmpty || p.toLowerCase() == 'default') {
       try {
-        final models = await getModels();
+        final models = await getModels(profile: targetProfile);
         final match = models.where((m) => m.name == modelName).firstOrNull;
         if (match != null && match.provider.isNotEmpty) {
           p = match.provider;
         }
       } catch (_) {}
     }
-    if (p.isEmpty) p = 'custom';
+    if (p.isEmpty) p = 'openrouter';
+
+    final lowerP = p.toLowerCase();
+    if (cleanKey.isNotEmpty) {
+      _customApiKeyByProfile[targetProfile] = cleanKey;
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_apiKeyPrefKey(targetProfile), cleanKey);
+      } catch (_) {}
+
+      try {
+        if (lowerP == 'openrouter') {
+          await setEnvValue('OPENROUTER_API_KEY', cleanKey, profile: targetProfile);
+        } else if (lowerP == 'anthropic') {
+          await setEnvValue('ANTHROPIC_API_KEY', cleanKey, profile: targetProfile);
+        } else if (lowerP == 'deepseek') {
+          await setEnvValue('DEEPSEEK_API_KEY', cleanKey, profile: targetProfile);
+        } else {
+          await setEnvValue('CUSTOM_API_KEY', cleanKey, profile: targetProfile);
+          await setEnvValue('OPENAI_API_KEY', cleanKey, profile: targetProfile);
+        }
+      } catch (_) {}
+    }
 
     try {
-      final res = await _dio.post("/api/model/set", data: {
-        "scope": "main",
-        "provider": p,
-        "model": modelName.isEmpty || modelName == 'hermes-agent' ? 'gpt-4o' : modelName,
-        "api_key": key,
-      });
+      final res = await _dio.post(
+        "/api/model/set",
+        queryParameters: _withProfile(targetProfile),
+        data: {
+          "scope": "main",
+          "provider": lowerP,
+          "model": modelName.isEmpty || modelName == 'hermes-agent' ? 'gpt-4o' : modelName,
+          "api_key": cleanKey,
+          if (targetProfile != 'default') "profile": targetProfile,
+        },
+      );
       if (res.statusCode == 200) return;
     } catch (_) {}
 
     try {
-      await _dio.put("/v1/models/$modelName/provider", data: {"provider": p, "api_key": key});
+      await _dio.put(
+        "/v1/models/$modelName/provider",
+        queryParameters: _withProfile(targetProfile),
+        data: {"provider": lowerP, "api_key": cleanKey},
+      );
     } catch (_) {}
   }
   String _extractSnippetFromRawMessages(List<Map<String, dynamic>> messages, {String fallback = ''}) {
@@ -1647,6 +2454,31 @@ class RemoteConnection extends HermesConnection {
       text = text.replaceAll(RegExp(r'```[\s\S]*?```'), '[code]').trim();
       text = text.replaceAll(RegExp(r'\s+'), ' ').trim();
 
+      if (role == 'user') {
+        if (text.contains('[DEVICE CONTROL CAPABILITY]')) {
+          text = text.split('[DEVICE CONTROL CAPABILITY]').first.trim();
+        }
+        if (text.contains('[PRIVILEGED SHELL CAPABILITY]')) {
+          text = text.split('[PRIVILEGED SHELL CAPABILITY]').first.trim();
+        }
+        if (text.contains('[RECENT LOCAL DEVICE CONTEXT:')) {
+          text = text.split('[RECENT LOCAL DEVICE CONTEXT:').first.trim();
+        }
+        if (text.contains('[INSTRUCTION:')) {
+          text = text.split('[INSTRUCTION:').first.trim();
+        }
+
+        final lower = text.toLowerCase();
+        if (text.isEmpty ||
+            lower.startsWith("user approved mobile action") ||
+            lower.startsWith("user declined") ||
+            lower.startsWith("user rejected") ||
+            lower.startsWith("observation from mobile") ||
+            lower.startsWith("you concluded your reasoning")) {
+          continue;
+        }
+      }
+
       if (text.isNotEmpty) {
         final prefix = (role == 'assistant' || role == 'agent' || role == 'bot') ? 'Pixie: ' : 'You: ';
         return '$prefix$text';
@@ -1656,46 +2488,105 @@ class RemoteConnection extends HermesConnection {
   }
 
   // -- Sessions --
-  @override
-  Future<List<SessionSummary>> getSessions({String? query}) async {
-    final qp = query != null ? "?q=$query" : "";
-    List<SessionSummary> sessions = [];
+  Future<List<SessionSummary>> _fetchSessionsForProfile(String profileId, {String? query}) async {
+    final queryParams = <String, dynamic>{
+      if (query != null && query.isNotEmpty) 'q': query,
+      if (profileId.isNotEmpty && profileId != 'default') 'profile': profileId,
+    };
+    List<SessionSummary> list = [];
 
     try {
-      final res = await _dio.get("/api/sessions$qp");
+      final res = await _dio.get(
+        "/api/sessions",
+        queryParameters: queryParams.isEmpty ? null : queryParams,
+      );
       if (res.data is Map<String, dynamic>) {
-        final list = (res.data['sessions'] as List<dynamic>?) ?? [];
-        sessions = list.map((j) => SessionSummary.fromJson(j as Map<String, dynamic>)).toList();
+        final rawList = (res.data['sessions'] as List<dynamic>?) ?? [];
+        list = rawList
+            .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>).copyWith(profile: profileId))
+            .toList();
       } else if (res.data is List<dynamic>) {
-        sessions = (res.data as List<dynamic>)
-            .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>))
+        list = (res.data as List<dynamic>)
+            .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>).copyWith(profile: profileId))
             .toList();
       }
     } catch (_) {}
 
-    if (sessions.isEmpty) {
+    if (list.isEmpty) {
       try {
-        final res = await _dio.get("/v1/sessions$qp");
+        final res = await _dio.get(
+          "/v1/sessions",
+          queryParameters: queryParams.isEmpty ? null : queryParams,
+        );
         if (res.data is List<dynamic>) {
-          sessions = (res.data as List<dynamic>)
-              .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>))
+          list = (res.data as List<dynamic>)
+              .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>).copyWith(profile: profileId))
               .toList();
         } else if (res.data is Map<String, dynamic>) {
-          final list = (res.data['sessions'] as List<dynamic>?) ?? [];
-          sessions = list.map((j) => SessionSummary.fromJson(j as Map<String, dynamic>)).toList();
+          final rawList = (res.data['sessions'] as List<dynamic>?) ?? [];
+          list = rawList
+              .map((j) => SessionSummary.fromJson(j as Map<String, dynamic>).copyWith(profile: profileId))
+              .toList();
         }
       } catch (_) {}
     }
 
+    return list;
+  }
+
+  @override
+  Future<List<SessionSummary>> getSessions({String? query}) async {
+    // Fetch sessions across all profiles so switching an active profile in a chat room
+    // never hides existing sessions from other profiles on the main chat screen.
+    final Set<String> profileIds = {'default', _activeProfile};
+    try {
+      final profiles = await listProfiles();
+      for (final p in profiles) {
+        if (p.id.trim().isNotEmpty) {
+          profileIds.add(p.id.trim());
+        }
+      }
+    } catch (_) {}
+
+    final Map<String, SessionSummary> mergedById = {};
+    final results = await Future.wait(
+      profileIds.map((pid) => _fetchSessionsForProfile(pid, query: query)),
+    );
+    for (final profileSessions in results) {
+      for (final s in profileSessions) {
+        if (s.id.isEmpty) continue;
+        if (!mergedById.containsKey(s.id) || s.profile != 'default') {
+          mergedById[s.id] = s;
+        }
+      }
+    }
+
+    final sessions = mergedById.values.toList()
+      ..sort((a, b) {
+        final da = DateTime.tryParse(a.startedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
+        final db = DateTime.tryParse(b.startedAt) ?? DateTime.fromMillisecondsSinceEpoch(0);
+        return db.compareTo(da);
+      });
+
     if (sessions.isEmpty) return [];
 
-    // Concurrently enrich top sessions with their latest message from getSessionMessages
+    // Concurrently enrich top sessions with their latest message only when snippet is missing
     try {
       final limit = sessions.length > 25 ? 25 : sessions.length;
       final enrichedTop = await Future.wait(
         sessions.take(limit).map((s) async {
+          // If session already has a distinct, enriched snippet, skip expensive network calls
+          final cleanSnippet = s.snippet.trim();
+          final cleanTitle = s.title.trim();
+          final isRedundantOrEmpty = cleanSnippet.isEmpty ||
+              cleanSnippet.toLowerCase() == cleanTitle.toLowerCase() ||
+              (!cleanSnippet.startsWith('Pixie:') && !cleanSnippet.startsWith('You:'));
+
+          if (!isRedundantOrEmpty) {
+            return s;
+          }
           try {
-            final msgs = await getSessionMessages(s.id);
+            final msgs = await getSessionMessages(s.id, profile: s.profile);
             if (msgs.isNotEmpty) {
               final lastSnippet = _extractSnippetFromRawMessages(msgs, fallback: s.snippet);
               if (lastSnippet.isNotEmpty) {
@@ -1714,28 +2605,46 @@ class RemoteConnection extends HermesConnection {
     return sessions;
   }
   @override
-  Future<void> deleteSession(String id) async {
+  Future<void> deleteSession(String id, {String? profile}) async {
     try {
-      final res = await _dio.delete("/api/sessions/$id");
+      final res = await _dio.delete(
+        "/api/sessions/$id",
+        queryParameters: _withProfile(profile),
+      );
       if (res.statusCode == 200) return;
     } catch (_) {}
     try {
-      await _dio.delete("/v1/sessions/$id");
+      await _dio.delete(
+        "/v1/sessions/$id",
+        queryParameters: _withProfile(profile),
+      );
     } catch (_) {}
   }
 
   @override
-  Future<void> renameSession(String id, String newTitle) async {
+  Future<void> renameSession(String id, String newTitle, {String? profile}) async {
     try {
-      await _dio.patch("/api/sessions/$id", data: {'title': newTitle});
+      await _dio.patch(
+        "/api/sessions/$id",
+        queryParameters: _withProfile(profile),
+        data: {'title': newTitle},
+      );
       return;
     } catch (_) {}
     try {
-      await _dio.put("/api/sessions/$id", data: {'title': newTitle});
+      await _dio.put(
+        "/api/sessions/$id",
+        queryParameters: _withProfile(profile),
+        data: {'title': newTitle},
+      );
       return;
     } catch (_) {}
     try {
-      await _dio.patch("/v1/sessions/$id", data: {'title': newTitle});
+      await _dio.patch(
+        "/v1/sessions/$id",
+        queryParameters: _withProfile(profile),
+        data: {'title': newTitle},
+      );
     } catch (_) {}
   }
   // -- Schedules --
@@ -1829,6 +2738,30 @@ class RemoteConnection extends HermesConnection {
     final res = await _dio.delete("/api/cron/jobs/$id");
     if (res.statusCode == 200) return;
     throw Exception("Failed to delete cron job: ${res.statusCode}");
+  }
+
+  @override
+  Future<bool> triggerSchedule(String id) async {
+    try {
+      final res = await _dio.post("/v1/schedules/$id/run");
+      if (res.statusCode != null && res.statusCode! >= 200 && res.statusCode! < 300) {
+        return true;
+      }
+    } catch (_) {}
+
+    try {
+      final res = await _dio.post("/api/cron/jobs/$id/run");
+      if (res.statusCode != null && res.statusCode! >= 200 && res.statusCode! < 300) {
+        return true;
+      }
+    } catch (_) {}
+
+    try {
+      final res = await _dio.post("/v1/schedules/$id/trigger");
+      return res.statusCode != null && res.statusCode! >= 200 && res.statusCode! < 300;
+    } catch (_) {
+      return false;
+    }
   }
   // -- Settings --
   @override
@@ -2352,7 +3285,7 @@ class RemoteConnection extends HermesConnection {
     final normalizedPath = path.replaceAll('\\', '/');
 
     // 1. Try HTTP /api/fs/read-text with both raw and normalized paths
-    for (final p in [path, normalizedPath]) {
+    for (final p in <String>{path, normalizedPath}) {
       try {
         final res = await _dio.get("/api/fs/read-text", queryParameters: {"path": p});
         if (res.data is Map<String, dynamic>) {
@@ -2366,7 +3299,7 @@ class RemoteConnection extends HermesConnection {
     }
 
     // 2. Try HTTP /api/fs/read
-    for (final p in [path, normalizedPath]) {
+    for (final p in <String>{path, normalizedPath}) {
       try {
         final res = await _dio.get("/api/fs/read", queryParameters: {"path": p});
         if (res.data is Map<String, dynamic>) {
@@ -2400,5 +3333,64 @@ class RemoteConnection extends HermesConnection {
   }
 
   @override
-  void dispose() {}
+  Future<bool> writeWorkspaceFile(String path, String content) async {
+    // Hermes HTTP gateway does not expose a direct file-write endpoint.
+    return false;
+  }
+
+  @override
+  Future<List<Map<String, dynamic>>> getCronJobRuns(String id) async {
+    try {
+      final res = await _dio.get("/api/cron/jobs/$id/runs");
+      if (res.data is List) {
+        return (res.data as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+      if (res.data is Map && res.data['runs'] is List) {
+        return (res.data['runs'] as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+    } catch (_) {}
+
+    try {
+      final res = await _dio.get("/api/cron/jobs/$id/logs");
+      if (res.data is List) {
+        return (res.data as List).whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+      }
+    } catch (_) {}
+
+    return [];
+  }
+
+  @override
+  Future<Map<String, dynamic>?> getWhatsAppBridgeStatus() async {
+    try {
+      final res = await _dio.get("/api/messaging/platforms/whatsapp/status");
+      if (res.data is Map) return Map<String, dynamic>.from(res.data as Map);
+    } catch (_) {}
+
+    try {
+      final res = await _dio.get("/api/messaging/platforms/whatsapp/qr");
+      if (res.data is Map) return Map<String, dynamic>.from(res.data as Map);
+    } catch (_) {}
+
+    return null;
+  }
+
+  @override
+  void dispose() {
+    for (final ws in _activeChatSockets.values) {
+      try {
+        ws.close(WebSocketStatus.normalClosure, 'RemoteConnection disposed');
+      } catch (_) {}
+    }
+    _activeChatSockets.clear();
+
+    try {
+      _pendingApprovalWs?.close(WebSocketStatus.normalClosure, 'RemoteConnection disposed');
+    } catch (_) {}
+    _pendingApprovalWs = null;
+
+    try {
+      _dio.close(force: true);
+    } catch (_) {}
+  }
 }

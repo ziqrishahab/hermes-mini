@@ -1,18 +1,21 @@
 import "package:flutter/material.dart";
+import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:flutter/services.dart";
 import "package:go_router/go_router.dart";
 
+import "../../providers/connection_provider.dart";
+import "../../providers/theme_provider.dart";
+import "../../services/storage_service.dart";
 import "../../theme.dart";
-import "../widgets/hermes_setup_guide.dart";
 
-class WelcomeScreen extends StatefulWidget {
+class WelcomeScreen extends ConsumerStatefulWidget {
   const WelcomeScreen({super.key});
 
   @override
-  State<WelcomeScreen> createState() => _WelcomeScreenState();
+  ConsumerState<WelcomeScreen> createState() => _WelcomeScreenState();
 }
 
-class _WelcomeScreenState extends State<WelcomeScreen>
+class _WelcomeScreenState extends ConsumerState<WelcomeScreen>
     with TickerProviderStateMixin {
   late final AnimationController _entryCtrl;
   late final AnimationController _floatingCtrl;
@@ -66,78 +69,18 @@ class _WelcomeScreenState extends State<WelcomeScreen>
     super.dispose();
   }
 
-  void _showQuickSetupSheet() {
-    HapticFeedback.lightImpact();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      isScrollControlled: true,
-      builder: (ctx) {
-        return Container(
-          padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
-          decoration: const BoxDecoration(
-            color: HermesTokens.bgPrimary,
-            borderRadius: BorderRadius.vertical(top: Radius.circular(HermesTokens.radiusLg)),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Center(
-                child: Container(
-                  width: 36,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: HermesTokens.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 18),
-              const Text(
-                "MyPixie Gateway Setup",
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: HermesTokens.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 12),
-              const HermesSetupGuide(),
-              const SizedBox(height: 18),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: HermesTokens.accent,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                    padding: const EdgeInsets.symmetric(vertical: 12),
-                    elevation: 0,
-                  ),
-                  onPressed: () {
-                    Navigator.of(ctx).pop();
-                    context.go('/connect');
-                  },
-                  child: const Text(
-                    "Ready to Connect",
-                    style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        );
-      },
-    );
-  }
+
 
   @override
   Widget build(BuildContext context) {
+    final isDark = ref.watch(isDarkProvider);
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: SystemUiOverlayStyle.dark.copyWith(
+      value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
+        statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
         systemNavigationBarColor: HermesTokens.bgPrimary,
+        systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
       ),
       child: Scaffold(
         backgroundColor: HermesTokens.bgPrimary,
@@ -164,20 +107,18 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                           );
                         },
                         child: Container(
-                          width: 120,
-                          height: 120,
+                          width: 156,
+                          height: 156,
                           decoration: NeumorphicDecoration.circle(
+                            color: isDark ? HermesTokens.charcoalSlate : HermesTokens.coolSilver,
                             distance: 6,
                             blur: 16,
+                            isDark: isDark,
                           ),
-                          padding: const EdgeInsets.all(15),
+                          padding: const EdgeInsets.all(22),
                           child: Image.asset(
-                            'assets/icons/pixie_transparent.png',
+                            HermesTokens.brandIconSet,
                             fit: BoxFit.contain,
-                            errorBuilder: (_, _, _) => Image.asset(
-                              'assets/icons/hermes_logo.png',
-                              fit: BoxFit.contain,
-                            ),
                           ),
                         ),
                       ),
@@ -186,7 +127,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                     const SizedBox(height: 24),
 
                     // Main Headline & Subtitle
-                    const Center(
+                    Center(
                       child: Text(
                         "Autonomous Intelligence,\nIn Your Hands.",
                         textAlign: TextAlign.center,
@@ -243,15 +184,22 @@ class _WelcomeScreenState extends State<WelcomeScreen>
 
                     // Primary Action Button (Connect Gateway)
                     GestureDetector(
-                      onTap: () {
+                      onTap: () async {
                         HapticFeedback.mediumImpact();
-                        context.go('/connect');
+                        final hasCompleted = await StorageService().isOnboardingCompleted();
+                        if (!context.mounted) return;
+                        if (hasCompleted) {
+                          ref.read(isOfflineModeProvider.notifier).state = true;
+                          context.go('/home');
+                        } else {
+                          context.go('/onboarding');
+                        }
                       },
                       child: Container(
                         width: double.infinity,
                         height: 52,
                         decoration: BoxDecoration(
-                          gradient: const LinearGradient(
+                          gradient: LinearGradient(
                             colors: [
                               HermesTokens.accent,
                               Color(0xFF8B5CF6),
@@ -290,23 +238,6 @@ class _WelcomeScreenState extends State<WelcomeScreen>
                         ),
                       ),
                     ),
-
-                    const SizedBox(height: 8),
-
-                    // Secondary Text Button (Setup Guide)
-                    Center(
-                      child: TextButton(
-                        onPressed: _showQuickSetupSheet,
-                        child: const Text(
-                          "How to start Hermes Gateway?",
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                            color: HermesTokens.textMuted,
-                          ),
-                        ),
-                      ),
-                    ),
                   ],
                 ),
               ),
@@ -333,7 +264,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w700,
               color: HermesTokens.textPrimary,
@@ -342,7 +273,7 @@ class _WelcomeScreenState extends State<WelcomeScreen>
           const SizedBox(height: 4),
           Text(
             description,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               color: HermesTokens.textMuted,
               height: 1.4,

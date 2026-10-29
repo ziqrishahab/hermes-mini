@@ -1,3 +1,5 @@
+import "dart:convert";
+import "dart:io";
 import "package:file_picker/file_picker.dart";
 import "package:flutter/material.dart";
 import "package:flutter/services.dart";
@@ -6,6 +8,7 @@ import "package:go_router/go_router.dart";
 import "../../models/chat_message.dart";
 import "../../providers/chat_provider.dart";
 import "../../providers/connection_provider.dart";
+import "../../providers/profiles_provider.dart";
 import "../../services/hermes_connection.dart";
 import "../../theme.dart";
 import "../widgets/chat_bubble.dart";
@@ -107,8 +110,58 @@ final List<_SlashCommandDef> _allSlashCommands = [
   _SlashCommandDef(
     command: "/device",
     label: "Device Control",
-    description: "Control local Android apps, battery, clipboard & status",
+    description: "Overview of all local Android device automation actions",
     icon: Icons.phone_android_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device screen",
+    label: "Read Screen",
+    description:
+        "Inspect and read all visible UI elements & text on phone screen",
+    icon: Icons.screen_search_desktop_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device wa",
+    label: "Send WhatsApp",
+    description: "Send WhatsApp message automatically (<phone> <message>)",
+    icon: Icons.chat_bubble_outline_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device clipboard",
+    label: "Device Clipboard",
+    description: "Read current clipboard content or copy text to device",
+    icon: Icons.content_paste_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device info",
+    label: "Device Info & Battery",
+    description: "Check Android OS, specs, and battery health",
+    icon: Icons.battery_charging_full_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device network",
+    label: "Network & Connectivity",
+    description: "Inspect 4G/5G cellular, Wi-Fi, and offline status",
+    icon: Icons.wifi_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device vibrate",
+    label: "Vibrate Phone",
+    description: "Trigger phone haptic vibration test",
+    icon: Icons.vibration_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device open",
+    label: "Open App",
+    description: "Launch apps like WhatsApp, YouTube, Spotify, Chrome, Maps",
+    icon: Icons.open_in_new_rounded,
+  ),
+  _SlashCommandDef(
+    command: "/device a11y",
+    label: "Accessibility Status",
+    description:
+        "Verify Hermes Accessibility Service for zero-touch automation",
+    icon: Icons.accessibility_new_rounded,
   ),
   _SlashCommandDef(
     command: "/help",
@@ -155,67 +208,78 @@ const List<_PromptSuggestion> _allPromptSuggestions = [
     icon: Icons.bug_report_outlined,
     title: "Find & Fix Bugs",
     subtitle: "Analyze runtime errors and stack traces",
-    prompt: "Analyze my recent code changes and help me identify potential bugs or regressions",
+    prompt:
+        "Analyze my recent code changes and help me identify potential bugs or regressions",
   ),
   _PromptSuggestion(
     icon: Icons.speed_rounded,
     title: "Optimize Performance",
     subtitle: "Memory leaks, frame drops, and query speeds",
-    prompt: "Give me actionable tips to optimize app rendering performance and reduce memory usage",
+    prompt:
+        "Give me actionable tips to optimize app rendering performance and reduce memory usage",
   ),
   _PromptSuggestion(
     icon: Icons.terminal_rounded,
     title: "Shell & CLI Scripts",
     subtitle: "Terminal commands, bash scripts, and automation",
-    prompt: "Write a bash script to automate project build, testing, and deployment",
+    prompt:
+        "Write a bash script to automate project build, testing, and deployment",
   ),
   _PromptSuggestion(
     icon: Icons.data_object_rounded,
     title: "API & Data Schema",
     subtitle: "REST models, JSON serialization, and endpoints",
-    prompt: "Design a clean REST API payload and Dart model with json serialization",
+    prompt:
+        "Design a clean REST API payload and Dart model with json serialization",
   ),
   _PromptSuggestion(
     icon: Icons.security_rounded,
     title: "Security & Auth Audit",
     subtitle: "API keys, token headers, and vulnerability checks",
-    prompt: "Audit my authentication flow and suggest security hardening best practices",
+    prompt:
+        "Audit my authentication flow and suggest security hardening best practices",
   ),
   _PromptSuggestion(
     icon: Icons.palette_outlined,
     title: "UI/UX Enhancements",
     subtitle: "Modern glassmorphism, neumorphism, and tokens",
-    prompt: "Suggest visual improvements and micro-animations to make this screen feel more premium",
+    prompt:
+        "Suggest visual improvements and micro-animations to make this screen feel more premium",
   ),
   _PromptSuggestion(
     icon: Icons.checklist_rounded,
     title: "Unit & Widget Tests",
     subtitle: "Mocks, test coverage, and assertions",
-    prompt: "Write comprehensive unit test cases covering edge cases for my state provider",
+    prompt:
+        "Write comprehensive unit test cases covering edge cases for my state provider",
   ),
   _PromptSuggestion(
     icon: Icons.account_tree_outlined,
     title: "Architecture Review",
     subtitle: "State management, clean layers, and separation",
-    prompt: "Review my current project structure and recommend clean architecture improvements",
+    prompt:
+        "Review my current project structure and recommend clean architecture improvements",
   ),
   _PromptSuggestion(
     icon: Icons.merge_type_rounded,
     title: "Git & Release Workflow",
     subtitle: "Branching strategies, changelogs, and tags",
-    prompt: "Generate a conventional commit guideline and automated release workflow",
+    prompt:
+        "Generate a conventional commit guideline and automated release workflow",
   ),
   _PromptSuggestion(
     icon: Icons.psychology_outlined,
     title: "Deep Reasoning Analysis",
     subtitle: "Complex algorithmic trade-offs & problem solving",
-    prompt: "Explain the algorithmic trade-offs between different caching strategies for mobile",
+    prompt:
+        "Explain the algorithmic trade-offs between different caching strategies for mobile",
   ),
   _PromptSuggestion(
     icon: Icons.storage_rounded,
     title: "Database Optimization",
     subtitle: "Indexing, relational queries, and migrations",
-    prompt: "How can I structure database indexes to optimize slow relational queries?",
+    prompt:
+        "How can I structure database indexes to optimize slow relational queries?",
   ),
 ];
 
@@ -255,6 +319,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     super.initState();
     _randomizeSuggestions();
     _sessionTitle = widget.title ?? "Hermes Agent";
+    final initialDraft = ref.read(chatDraftsProvider.notifier).getDraft(widget.sessionId);
+    if (initialDraft.isNotEmpty) {
+      _ctrl.text = initialDraft;
+      _ctrl.selection = TextSelection.fromPosition(
+        TextPosition(offset: _ctrl.text.length),
+      );
+    }
     _ctrl.addListener(_onTextChanged);
     _inputFocus.addListener(() {
       if (_inputFocus.hasFocus) {
@@ -305,7 +376,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     final isGenerating = ref.read(generatingSessionsProvider).contains(sId);
 
     // If this session is already loaded in memory (or generating in background), do NOT wipe!
-    if (notifier.activeSessionId == sId && ref.read(chatMessagesProvider).isNotEmpty) {
+    if (notifier.activeSessionId == sId &&
+        ref.read(chatMessagesProvider).isNotEmpty) {
       _jumpToLatest();
       return;
     }
@@ -335,6 +407,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   void _onTextChanged() {
+    ref.read(chatDraftsProvider.notifier).setDraft(widget.sessionId, _ctrl.text);
     setState(() {});
   }
 
@@ -360,9 +433,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       }
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Failed to pick file: $e")),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text("Failed to pick file: $e")));
       }
     }
   }
@@ -384,7 +457,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       return null;
     }
 
-    if (lastMsg.id.isNotEmpty && _globallyResolvedApprovals.contains(lastMsg.id)) {
+    if (lastMsg.id.isNotEmpty &&
+        _globallyResolvedApprovals.contains(lastMsg.id)) {
       return null;
     }
 
@@ -399,61 +473,210 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       return null;
     }
 
-    final requiresApproval = content.contains("confirm_required") ||
+    final requiresApproval =
+        content.contains("confirm_required") ||
         lower.contains("approval required") ||
         lower.contains("requires approval") ||
         lower.contains("requires confirmation") ||
         (lower.contains("permission to run") && content.contains("?")) ||
-        (lower.contains("execute the following command") && content.contains("?")) ||
-        (lower.contains("[approve]") && (lower.contains("[reject]") || lower.contains("[deny]")));
+        (lower.contains("execute the following command") &&
+            content.contains("?")) ||
+        (lower.contains("[approve]") &&
+            (lower.contains("[reject]") || lower.contains("[deny]")));
 
     if (!requiresApproval) return null;
 
     var command = RegExp(r'`([^`]+)`').firstMatch(content)?.group(1);
     if (command == null || command.isEmpty) {
-      final reqMatch = RegExp(r'(?:Request|Command):\s*([a-zA-Z0-9_\-\./]+)', caseSensitive: false).firstMatch(content);
+      final reqMatch = RegExp(
+        r'(?:Request|Command):\s*([a-zA-Z0-9_\-\./]+)',
+        caseSensitive: false,
+      ).firstMatch(content);
       command = reqMatch?.group(1);
     }
     if (command == null || command.isEmpty) {
-      final deployMatch = RegExp(r'(deploy[a-zA-Z0-9_\-\./]*)', caseSensitive: false).firstMatch(content);
+      final deployMatch = RegExp(
+        r'(deploy[a-zA-Z0-9_\-\./]*)',
+        caseSensitive: false,
+      ).firstMatch(content);
       command = deployMatch?.group(1);
     }
 
     return {
       'id': lastMsg.id,
-      'message': content.length > 200 ? '${content.substring(0, 200)}...' : content,
+      'message': content.length > 200
+          ? '${content.substring(0, 200)}...'
+          : content,
       if (command != null && command.isNotEmpty) 'command': command,
     };
+  }
+
+  Future<String> _processAttachment(PlatformFile att) async {
+    final sizeStr = _formatFileSize(att.size);
+    final ext = att.extension?.toLowerCase() ?? '';
+
+    const textExtensions = {
+      'txt',
+      'md',
+      'markdown',
+      'log',
+      'json',
+      'yaml',
+      'yml',
+      'xml',
+      'csv',
+      'tsv',
+      'dart',
+      'py',
+      'js',
+      'ts',
+      'jsx',
+      'tsx',
+      'html',
+      'css',
+      'scss',
+      'c',
+      'cpp',
+      'h',
+      'hpp',
+      'cs',
+      'java',
+      'kt',
+      'kts',
+      'go',
+      'rs',
+      'sh',
+      'bash',
+      'ps1',
+      'sql',
+      'env',
+      'toml',
+      'ini',
+      'conf',
+      'gradle',
+      'properties',
+    };
+
+    String? textContent;
+    try {
+      Uint8List? bytes = att.bytes;
+      if (bytes == null && att.path != null) {
+        final f = File(att.path!);
+        if (await f.exists()) {
+          final length = await f.length();
+          if (length <= 256 * 1024) {
+            bytes = await f.readAsBytes();
+          }
+        }
+      }
+
+      if (bytes != null) {
+        if (textExtensions.contains(ext) || bytes.length <= 64 * 1024) {
+          try {
+            textContent = utf8.decode(bytes);
+          } catch (_) {
+            // Not valid UTF-8
+          }
+        }
+      }
+    } catch (_) {
+      // Fallback without embedded text
+    }
+
+    if (textContent != null && textContent.trim().isNotEmpty) {
+      if (textContent.length > 15000) {
+        textContent =
+            '${textContent.substring(0, 15000)}\n\n[Content truncated due to size]';
+      }
+      return '[Attached File: ${att.name} ($sizeStr)]\n```$ext\n$textContent\n```';
+    }
+
+    return '[Attached File: ${att.name} ($sizeStr)]';
+  }
+
+  void _exportSessionMarkdown() {
+    final messages = ref.read(chatMessagesProvider);
+    if (messages.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No messages to export'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    final title = _sessionTitle;
+    final buffer = StringBuffer();
+    buffer.writeln('# $title');
+    buffer.writeln(
+      'Date: ${DateTime.now().toLocal().toString().split(".")[0]}',
+    );
+    buffer.writeln();
+    buffer.writeln('---');
+    buffer.writeln();
+
+    for (final msg in messages) {
+      final role = msg.role == MessageRole.user ? 'User' : 'Hermes';
+      buffer.writeln('### $role');
+      buffer.writeln(msg.content.trim());
+      buffer.writeln();
+    }
+
+    Clipboard.setData(ClipboardData(text: buffer.toString()));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Conversation copied to clipboard in Markdown format'),
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _send() async {
     final t = _ctrl.text.trim();
     final generating = ref.read(generatingSessionsProvider);
-    final isGenerating = _streaming ||
+    final isGenerating =
+        _streaming ||
         (widget.sessionId != null && generating.contains(widget.sessionId)) ||
         ref.read(chatMessagesProvider).any((m) => m.isStreaming);
 
     if ((t.isEmpty && _attachment == null) || isGenerating) return;
 
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "Gateway connection lost. Connect gateway to send new messages.",
+          ),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
     final att = _attachment;
     String fullMessage = t;
     if (att != null) {
-      final sizeStr = _formatFileSize(att.size);
+      final attBlock = await _processAttachment(att);
       if (fullMessage.isEmpty) {
-        fullMessage = "[Attached File: ${att.name} ($sizeStr)]";
+        fullMessage = attBlock;
       } else {
-        fullMessage = "[Attached File: ${att.name} ($sizeStr)]\n\n$fullMessage";
+        fullMessage = "$attBlock\n\n$fullMessage";
       }
     }
 
     _ctrl.clear();
+    ref.read(chatDraftsProvider.notifier).clearDraft(widget.sessionId);
     setState(() {
       _streaming = true;
       _attachment = null;
     });
     _scrollToBottom(immediate: true);
     try {
-      await ref.read(chatMessagesProvider.notifier).sendMessage(fullMessage, sessionId: widget.sessionId);
+      await ref
+          .read(chatMessagesProvider.notifier)
+          .sendMessage(fullMessage, sessionId: widget.sessionId);
     } finally {
       if (mounted) {
         setState(() => _streaming = false);
@@ -485,7 +708,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
+        title: Text(
           "Rename Session",
           style: TextStyle(
             color: HermesTokens.textPrimary,
@@ -499,10 +722,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           child: TextField(
             controller: editCtrl,
             autofocus: true,
-            style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 14),
-            decoration: const InputDecoration(
+            style: TextStyle(color: HermesTokens.textPrimary, fontSize: 14),
+            decoration: InputDecoration(
+              filled: false,
               border: InputBorder.none,
-              hintText: "Enter session title...",
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
+              hintText: "Session title",
               hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 14),
             ),
             onSubmitted: (val) {
@@ -514,20 +740,28 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text(
+              "Cancel",
+              style: TextStyle(color: HermesTokens.textMuted),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: HermesTokens.accent,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
               elevation: 0,
             ),
             onPressed: () {
               final val = editCtrl.text.trim();
               Navigator.of(ctx).pop(val.isNotEmpty ? val : null);
             },
-            child: const Text("Save", style: TextStyle(fontWeight: FontWeight.w600)),
+            child: const Text(
+              "Save",
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
@@ -562,7 +796,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
+        title: Text(
           "Clear Messages?",
           style: TextStyle(
             color: HermesTokens.textPrimary,
@@ -570,27 +804,32 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
             fontWeight: FontWeight.w700,
           ),
         ),
-        content: const Text(
+        content: Text(
           "Are you sure you want to clear active messages from the screen?",
-          style: TextStyle(
-            color: HermesTokens.textSecondary,
-            fontSize: 13,
-          ),
+          style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text(
+              "Cancel",
+              style: TextStyle(color: HermesTokens.textMuted),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: HermesTokens.accent,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
               elevation: 0,
             ),
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text("Clear", style: TextStyle(fontWeight: FontWeight.w600)),
+            child: const Text(
+              "Clear",
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
@@ -607,7 +846,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       builder: (ctx) => AlertDialog(
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        title: const Text(
+        title: Text(
           "Delete Session?",
           style: TextStyle(
             color: HermesTokens.textPrimary,
@@ -617,25 +856,30 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         ),
         content: Text(
           'Are you sure you want to permanently delete "$_sessionTitle"? This cannot be undone.',
-          style: const TextStyle(
-            color: HermesTokens.textSecondary,
-            fontSize: 13,
-          ),
+          style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text(
+              "Cancel",
+              style: TextStyle(color: HermesTokens.textMuted),
+            ),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
               backgroundColor: HermesTokens.error,
               foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(10),
+              ),
               elevation: 0,
             ),
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text("Delete", style: TextStyle(fontWeight: FontWeight.w600)),
+            child: const Text(
+              "Delete",
+              style: TextStyle(fontWeight: FontWeight.w600),
+            ),
           ),
         ],
       ),
@@ -689,17 +933,28 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   }
 
   void _handleSlashCommand(_SlashCommandDef cmd) {
-    if (cmd.command == "/device") {
-      _ctrl.text = "/device ";
-      _ctrl.selection = TextSelection.fromPosition(
-        TextPosition(offset: _ctrl.text.length),
-      );
-      _inputFocus.requestFocus();
-      setState(() {});
-      return;
+    if (cmd.command.startsWith("/device")) {
+      if (cmd.command == "/device" ||
+          cmd.command == "/device wa" ||
+          cmd.command == "/device open" ||
+          cmd.command == "/device click" ||
+          cmd.command == "/device type") {
+        _ctrl.text = "${cmd.command} ";
+        _ctrl.selection = TextSelection.fromPosition(
+          TextPosition(offset: _ctrl.text.length),
+        );
+        _inputFocus.requestFocus();
+        setState(() {});
+        return;
+      } else {
+        _ctrl.text = cmd.command;
+        _send();
+        return;
+      }
     }
 
     _ctrl.clear();
+    ref.read(chatDraftsProvider.notifier).clearDraft(widget.sessionId);
     setState(() {});
 
     switch (cmd.command) {
@@ -720,10 +975,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         _send();
         break;
       case "/memory":
-        context.push('/memory-editor');
+        context.push('/memory-editor', extra: ref.read(activeProfileProvider));
         break;
       case "/soul":
-        context.push('/soul-editor');
+        context.push('/soul-editor', extra: ref.read(activeProfileProvider));
         break;
       case "/capabilities":
         context.push('/capabilities');
@@ -758,13 +1013,24 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
     final messages = ref.watch(chatMessagesProvider);
     final selected = ref.watch(selectedModelProvider);
     final generatingSessions = ref.watch(generatingSessionsProvider);
-    final isGenerating = _streaming ||
-        (widget.sessionId != null && generatingSessions.contains(widget.sessionId)) ||
+    final isGenerating =
+        _streaming ||
+        (widget.sessionId != null &&
+            generatingSessions.contains(widget.sessionId)) ||
         messages.any((m) => m.isStreaming);
 
     final totalTokens = _estimateTokens(messages);
     final estCost = _estimateCost(totalTokens);
     final pendingApproval = _detectPendingApproval(messages);
+
+    final drafts = ref.watch(chatDraftsProvider);
+    final currentDraft = drafts[(widget.sessionId != null && widget.sessionId!.isNotEmpty) ? widget.sessionId! : 'new'];
+    if (currentDraft != null && currentDraft.isNotEmpty && _ctrl.text.isEmpty) {
+      _ctrl.text = currentDraft;
+      _ctrl.selection = TextSelection.fromPosition(
+        TextPosition(offset: _ctrl.text.length),
+      );
+    }
 
     final text = _ctrl.text.trim();
     final isSlash = text.startsWith('/');
@@ -778,96 +1044,193 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           }).toList()
         : <_SlashCommandDef>[];
 
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+
+    final activeProfileId = ref.watch(activeProfileProvider);
+    final profiles = ref.watch(profilesListProvider).valueOrNull ?? [];
+    final rawProfileName = profiles
+        .where((p) => p.id == activeProfileId)
+        .firstOrNull
+        ?.name;
+    final activeProfileName =
+        (rawProfileName != null && rawProfileName.trim().isNotEmpty)
+        ? rawProfileName.trim()
+        : (activeProfileId == 'default' ? 'Default Agent' : activeProfileId);
+    final isSessionLocked =
+        (widget.sessionId != null && widget.sessionId!.isNotEmpty) ||
+        messages.isNotEmpty;
+
     return Scaffold(
       resizeToAvoidBottomInset: true,
       backgroundColor: HermesTokens.bgPrimary,
       appBar: AppBar(
         backgroundColor: HermesTokens.bgPrimary,
         elevation: 0,
-        leadingWidth: 54,
+        leadingWidth: 52,
+        titleSpacing: 8,
+        centerTitle: false,
         leading: Padding(
           padding: const EdgeInsets.only(left: 14),
           child: Center(
             child: Container(
               width: 38,
               height: 38,
-              decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
+              decoration: NeumorphicDecoration.raised(
+                radius: 12,
+                distance: 2.5,
+                blur: 5,
+              ),
               child: IconButton(
                 tooltip: "Back to conversations",
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
+                icon: Icon(
+                  Icons.arrow_back_ios_new_rounded,
+                  color: HermesTokens.textPrimary,
+                  size: 16,
+                ),
                 onPressed: () => context.pop(),
                 padding: EdgeInsets.zero,
               ),
             ),
           ),
         ),
-        title: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.55),
-          child: InkWell(
-            onTap: () => _showModelSheet(context, [], selected),
-            borderRadius: BorderRadius.circular(16),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              decoration: NeumorphicDecoration.raised(
-                radius: 16,
-                distance: 2.5,
-                blur: 5,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _sessionTitle,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w700,
-                      color: HermesTokens.textPrimary,
-                      height: 1.1,
-                    ),
+        title: Row(
+          children: [
+            Expanded(
+              flex: 6,
+              child: InkWell(
+                onTap: () => _showModelSheet(context, [], selected),
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: NeumorphicDecoration.raised(
+                    radius: 12,
+                    distance: 2.5,
+                    blur: 5,
                   ),
-                  const SizedBox(height: 2),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Container(
-                        width: 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: isGenerating ? HermesTokens.accent : HermesTokens.success,
-                          shape: BoxShape.circle,
+                      Text(
+                        _sessionTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w700,
+                          color: HermesTokens.textPrimary,
+                          height: 1.1,
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      Flexible(
+                      const SizedBox(height: 2),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 6,
+                            height: 6,
+                            decoration: BoxDecoration(
+                              color: isGenerating
+                                  ? HermesTokens.accent
+                                  : HermesTokens.success,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              isGenerating
+                                  ? "Thinking..."
+                                  : (selected.isNotEmpty
+                                        ? _ParsedModelInfo.fromRaw(
+                                            selected,
+                                          ).cleanName
+                                        : "Select Model"),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w500,
+                                color: isGenerating
+                                    ? HermesTokens.accent
+                                    : HermesTokens.textMuted,
+                                height: 1.1,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 2),
+                          Icon(
+                            Icons.keyboard_arrow_down_rounded,
+                            size: 13,
+                            color: HermesTokens.textMuted,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              flex: 5,
+              child: GestureDetector(
+                onTap: isSessionLocked
+                    ? null
+                    : () => _showProfileSelectorSheet(context),
+                child: Container(
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: isSessionLocked
+                      ? NeumorphicDecoration.recessed(radius: 12)
+                      : NeumorphicDecoration.raised(
+                          radius: 12,
+                          distance: 2.5,
+                          blur: 5,
+                        ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(
+                        isSessionLocked
+                            ? Icons.lock_outline_rounded
+                            : Icons.person_outline_rounded,
+                        size: 13,
+                        color: isSessionLocked
+                            ? HermesTokens.textMuted
+                            : HermesTokens.accent,
+                      ),
+                      const SizedBox(width: 5),
+                      Expanded(
                         child: Text(
-                          isGenerating
-                              ? "Thinking..."
-                              : (selected.isNotEmpty
-                                  ? _ParsedModelInfo.fromRaw(selected).cleanName
-                                  : "Select Model"),
+                          activeProfileName,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                            color: isGenerating ? HermesTokens.accent : HermesTokens.textMuted,
-                            height: 1.1,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: isSessionLocked
+                                ? HermesTokens.textSecondary
+                                : HermesTokens.textPrimary,
                           ),
                         ),
                       ),
-                      const SizedBox(width: 2),
-                      const Icon(Icons.keyboard_arrow_down_rounded, size: 14, color: HermesTokens.textMuted),
+                      if (!isSessionLocked) ...[
+                        const SizedBox(width: 2),
+                        Icon(
+                          Icons.keyboard_arrow_down_rounded,
+                          size: 13,
+                          color: HermesTokens.textMuted,
+                        ),
+                      ],
                     ],
                   ),
-                ],
+                ),
               ),
             ),
-          ),
+          ],
         ),
-        centerTitle: true,
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 14),
@@ -875,7 +1238,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               child: Container(
                 width: 38,
                 height: 38,
-                decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
+                decoration: NeumorphicDecoration.raised(
+                  radius: 12,
+                  distance: 2.5,
+                  blur: 5,
+                ),
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: Theme(
@@ -884,10 +1251,10 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                         color: HermesTokens.bgElevated,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(16),
-                          side: const BorderSide(color: HermesTokens.border),
+                          side: BorderSide(color: HermesTokens.border),
                         ),
                         elevation: 6,
-                        textStyle: const TextStyle(
+                        textStyle: TextStyle(
                           color: HermesTokens.textPrimary,
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
@@ -896,11 +1263,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     ),
                     child: PopupMenuButton<String>(
                       tooltip: "Session options",
-                      icon: const Icon(Icons.more_vert_rounded, color: HermesTokens.textSecondary, size: 20),
+                      icon: Icon(
+                        Icons.more_vert_rounded,
+                        color: HermesTokens.textSecondary,
+                        size: 20,
+                      ),
                       padding: EdgeInsets.zero,
                       onSelected: (val) {
                         if (val == "rename") {
                           _showRenameDialog();
+                        } else if (val == "export") {
+                          _exportSessionMarkdown();
                         } else if (val == "clear") {
                           _confirmClearMessages();
                         } else if (val == "delete") {
@@ -908,25 +1281,66 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                         }
                       },
                       itemBuilder: (ctx) => [
-                        const PopupMenuItem<String>(
+                        PopupMenuItem<String>(
+                          value: "export",
+                          height: 42,
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.file_download_outlined,
+                                size: 18,
+                                color: HermesTokens.textSecondary,
+                              ),
+                              SizedBox(width: 10),
+                              Text(
+                                "Export to Markdown",
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: HermesTokens.textPrimary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem<String>(
                           value: "rename",
                           height: 42,
                           child: Row(
                             children: [
-                              Icon(Icons.edit_outlined, size: 18, color: HermesTokens.textSecondary),
+                              Icon(
+                                Icons.edit_outlined,
+                                size: 18,
+                                color: HermesTokens.textSecondary,
+                              ),
                               SizedBox(width: 10),
-                              Text("Rename Session", style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary)),
+                              Text(
+                                "Rename Session",
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: HermesTokens.textPrimary,
+                                ),
+                              ),
                             ],
                           ),
                         ),
-                        const PopupMenuItem<String>(
+                        PopupMenuItem<String>(
                           value: "clear",
                           height: 42,
                           child: Row(
                             children: [
-                              Icon(Icons.cleaning_services_outlined, size: 18, color: HermesTokens.textSecondary),
+                              Icon(
+                                Icons.cleaning_services_outlined,
+                                size: 18,
+                                color: HermesTokens.textSecondary,
+                              ),
                               SizedBox(width: 10),
-                              Text("Clear Messages", style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary)),
+                              Text(
+                                "Clear Messages",
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: HermesTokens.textPrimary,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -936,9 +1350,20 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                           height: 42,
                           child: Row(
                             children: [
-                              Icon(Icons.delete_outline_rounded, size: 18, color: HermesTokens.error),
+                              Icon(
+                                Icons.delete_outline_rounded,
+                                size: 18,
+                                color: HermesTokens.error,
+                              ),
                               SizedBox(width: 10),
-                              Text("Delete Session", style: TextStyle(fontSize: 13, color: HermesTokens.error, fontWeight: FontWeight.w600)),
+                              Text(
+                                "Delete Session",
+                                style: TextStyle(
+                                  fontSize: 13,
+                                  color: HermesTokens.error,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
                             ],
                           ),
                         ),
@@ -964,7 +1389,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   VibeModeView(
                     messages: messages,
                     isGenerating: isGenerating,
-                    activeCwd: ref.watch(activeWorkspaceProvider).path.isNotEmpty
+                    isActive: _isVibeMode,
+                    activeCwd:
+                        ref.watch(activeWorkspaceProvider).path.isNotEmpty
                         ? ref.watch(activeWorkspaceProvider).path
                         : _activeCwd,
                     connection: ref.watch(connectionProvider).valueOrNull,
@@ -982,12 +1409,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (_isVibeMode)
-                    _buildVibeQuickChips(),
                   if (!isGenerating && pendingApproval != null)
                     _buildApprovalCard(pendingApproval),
-                  if (_attachment != null)
-                    _buildAttachmentPreview(),
+                  if (_attachment != null) _buildAttachmentPreview(),
                   if (isSlash && matchingCommands.isNotEmpty)
                     _buildSlashCommandsPalette(matchingCommands),
                   Container(
@@ -995,28 +1419,34 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
                     decoration: BoxDecoration(
                       color: HermesTokens.bgPrimary,
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Colors.white,
-                          offset: Offset(0, -4),
-                          blurRadius: 8,
+                      border: Border(
+                        top: BorderSide(
+                          color: isDark
+                              ? const Color(0x1FFFFFFF)
+                              : const Color(0x14000000),
+                          width: 1,
                         ),
-                        BoxShadow(
-                          color: Color(0x22A3B1C6),
-                          offset: Offset(0, -1),
-                          blurRadius: 3,
-                        ),
-                      ],
+                      ),
                     ),
                     child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Container(
                           width: 40,
                           height: 40,
-                          decoration: NeumorphicDecoration.raised(radius: 14, distance: 2, blur: 4),
+                          margin: const EdgeInsets.only(bottom: 2),
+                          decoration: NeumorphicDecoration.raised(
+                            radius: 14,
+                            distance: 2,
+                            blur: 4,
+                          ),
                           child: IconButton(
                             tooltip: "Attach file",
-                            icon: const Icon(Icons.attach_file_rounded, color: HermesTokens.textSecondary, size: 18),
+                            icon: Icon(
+                              Icons.attach_file_rounded,
+                              color: HermesTokens.textSecondary,
+                              size: 18,
+                            ),
                             padding: EdgeInsets.zero,
                             onPressed: isGenerating ? null : _pickAttachment,
                           ),
@@ -1024,25 +1454,39 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Container(
-                            decoration: NeumorphicDecoration.recessed(radius: 18),
+                            decoration: NeumorphicDecoration.recessed(
+                              radius: 18,
+                            ),
                             padding: const EdgeInsets.symmetric(horizontal: 16),
                             child: TextField(
                               key: const ValueKey('chat_input_text_field'),
                               controller: _ctrl,
                               focusNode: _inputFocus,
                               enabled: !isGenerating,
-                              style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
-                              decoration: const InputDecoration(
-                                hintText: "Message MyPixie or type / for commands...",
-                                hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                              minLines: 1,
+                              maxLines: 5,
+                              keyboardType: TextInputType.multiline,
+                              textInputAction: TextInputAction.newline,
+                              style: TextStyle(
+                                color: HermesTokens.textPrimary,
+                                fontSize: 13,
+                                height: 1.4,
+                              ),
+                              decoration: InputDecoration(
+                                hintText: "Message MyPixie...",
+                                hintStyle: TextStyle(
+                                  color: HermesTokens.textMuted,
+                                  fontSize: 13,
+                                ),
                                 filled: false,
                                 border: InputBorder.none,
                                 enabledBorder: InputBorder.none,
                                 focusedBorder: InputBorder.none,
-                                contentPadding: EdgeInsets.symmetric(vertical: 12),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  vertical: 11,
+                                ),
                                 isDense: true,
                               ),
-                              onSubmitted: (_) => _send(),
                             ),
                           ),
                         ),
@@ -1051,21 +1495,35 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                           width: 44,
                           height: 44,
                           decoration: NeumorphicDecoration.circle(
-                            color: isGenerating ? HermesTokens.error : HermesTokens.accent,
+                            color: isGenerating
+                                ? HermesTokens.error
+                                : HermesTokens.accent,
                           ),
                           child: IconButton(
-                            tooltip: isGenerating ? "Stop generation" : "Send message",
+                            tooltip: isGenerating
+                                ? "Stop generation"
+                                : "Send message",
                             onPressed: isGenerating
                                 ? () {
                                     HapticFeedback.mediumImpact();
-                                    ref.read(chatMessagesProvider.notifier).stopGeneration(
-                                      sessionId: widget.sessionId,
-                                    );
+                                    ref
+                                        .read(chatMessagesProvider.notifier)
+                                        .stopGeneration(
+                                          sessionId: widget.sessionId,
+                                        );
                                   }
                                 : _send,
                             icon: isGenerating
-                                ? const Icon(Icons.stop_rounded, color: Colors.white, size: 24)
-                                : const Icon(Icons.arrow_upward_rounded, color: Colors.white, size: 20),
+                                ? const Icon(
+                                    Icons.stop_rounded,
+                                    color: Colors.white,
+                                    size: 24,
+                                  )
+                                : const Icon(
+                                    Icons.arrow_upward_rounded,
+                                    color: Colors.white,
+                                    size: 20,
+                                  ),
                             padding: EdgeInsets.zero,
                           ),
                         ),
@@ -1084,14 +1542,23 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
   Widget _buildAttachmentPreview() {
     if (_attachment == null) return const SizedBox.shrink();
     final att = _attachment!;
-    final isImage = ['png', 'jpg', 'jpeg', 'webp', 'gif']
-        .contains((att.extension ?? '').toLowerCase());
+    final isImage = [
+      'png',
+      'jpg',
+      'jpeg',
+      'webp',
+      'gif',
+    ].contains((att.extension ?? '').toLowerCase());
 
     return Container(
       key: const ValueKey('attachment_preview'),
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: NeumorphicDecoration.raised(radius: 14, distance: 2.5, blur: 5),
+      decoration: NeumorphicDecoration.raised(
+        radius: 14,
+        distance: 2.5,
+        blur: 5,
+      ),
       child: Row(
         children: [
           Icon(
@@ -1109,7 +1576,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   att.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     fontWeight: FontWeight.w600,
                     color: HermesTokens.textPrimary,
@@ -1117,13 +1584,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 ),
                 Text(
                   _formatFileSize(att.size),
-                  style: const TextStyle(fontSize: 10, color: HermesTokens.textMuted),
+                  style: TextStyle(fontSize: 10, color: HermesTokens.textMuted),
                 ),
               ],
             ),
           ),
           IconButton(
-            icon: const Icon(Icons.close_rounded, size: 16, color: HermesTokens.textMuted),
+            icon: Icon(
+              Icons.close_rounded,
+              size: 16,
+              color: HermesTokens.textMuted,
+            ),
             padding: EdgeInsets.zero,
             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
             onPressed: () => setState(() => _attachment = null),
@@ -1140,16 +1611,20 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       key: ValueKey('approval_card_${approvalId ?? 'default'}'),
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       padding: const EdgeInsets.all(14),
-      decoration: NeumorphicDecoration.raised(radius: 16, distance: 3.5, blur: 8),
+      decoration: NeumorphicDecoration.raised(
+        radius: 16,
+        distance: 3.5,
+        blur: 8,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
             children: [
-              const Icon(Icons.shield_outlined, size: 16, color: HermesTokens.accent),
+              Icon(Icons.shield_outlined, size: 16, color: HermesTokens.accent),
               const SizedBox(width: 8),
-              const Expanded(
+              Expanded(
                 child: Text(
                   "Command Execution Approval",
                   style: TextStyle(
@@ -1170,9 +1645,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   });
                 },
                 borderRadius: BorderRadius.circular(8),
-                child: const Padding(
+                child: Padding(
                   padding: EdgeInsets.all(4),
-                  child: Icon(Icons.close_rounded, size: 16, color: HermesTokens.textMuted),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: HermesTokens.textMuted,
+                  ),
                 ),
               ),
             ],
@@ -1185,7 +1664,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               decoration: NeumorphicDecoration.recessed(radius: 8),
               child: Text(
                 command,
-                style: const TextStyle(
+                style: TextStyle(
                   fontFamily: 'monospace',
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
@@ -1196,8 +1675,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
             const SizedBox(height: 10),
           ] else ...[
             Text(
-              approval['message'] ?? "This action requires operator confirmation.",
-              style: const TextStyle(fontSize: 11, color: HermesTokens.textSecondary),
+              approval['message'] ??
+                  "This action requires operator confirmation.",
+              style: TextStyle(fontSize: 11, color: HermesTokens.textSecondary),
             ),
             const SizedBox(height: 10),
           ],
@@ -1218,18 +1698,27 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     await conn.respondApproval('deny');
                     await conn.denyAction();
                   }
-                  ref.read(chatMessagesProvider.notifier).sendMessage("/deny", sessionId: widget.sessionId);
+                  ref
+                      .read(chatMessagesProvider.notifier)
+                      .sendMessage("/deny", sessionId: widget.sessionId);
                 },
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 7,
+                  ),
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(color: HermesTokens.border),
                   ),
-                  child: const Text(
+                  child: Text(
                     "Deny",
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textSecondary),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: HermesTokens.textSecondary,
+                    ),
                   ),
                 ),
               ),
@@ -1248,11 +1737,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     await conn.respondApproval('once');
                     await conn.approveAction();
                   }
-                  ref.read(chatMessagesProvider.notifier).sendMessage("/approve", sessionId: widget.sessionId);
+                  ref
+                      .read(chatMessagesProvider.notifier)
+                      .sendMessage("/approve", sessionId: widget.sessionId);
                 },
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 7,
+                  ),
                   decoration: NeumorphicDecoration.raised(
                     radius: 8,
                     distance: 2,
@@ -1261,7 +1755,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   ),
                   child: const Text(
                     "Approve",
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.white),
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                    ),
                   ),
                 ),
               ),
@@ -1274,7 +1772,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
 
   Widget _buildTopPillsRow(int tokens, double cost, String model) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 6),
+      padding: const EdgeInsets.fromLTRB(14, 4, 14, 6),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -1284,31 +1782,26 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
             child: Container(
               height: 34,
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: NeumorphicDecoration.raised(radius: 17, distance: 2, blur: 4),
+              decoration: NeumorphicDecoration.raised(
+                radius: 17,
+                distance: 2,
+                blur: 4,
+              ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.bolt_rounded, size: 14, color: HermesTokens.accent),
+                  Icon(
+                    Icons.bolt_rounded,
+                    size: 14,
+                    color: HermesTokens.accent,
+                  ),
                   const SizedBox(width: 4),
                   Text(
                     "${_formatNumber(tokens)} tkn",
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
                       color: HermesTokens.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(width: 5),
-                  const Text("•", style: TextStyle(fontSize: 10, color: HermesTokens.textMuted)),
-                  const SizedBox(width: 5),
-                  Text(
-                    tokens == 0
-                        ? "\$0"
-                        : (cost < 0.0001 ? "<\$0.0001" : "\$${cost.toStringAsFixed(4)}"),
-                    style: const TextStyle(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: HermesTokens.textSecondary,
                     ),
                   ),
                 ],
@@ -1318,6 +1811,146 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           // Right Pill: Mode Switcher [Chat | Vibe]
           _buildModeTogglePill(),
         ],
+      ),
+    );
+  }
+
+  void _showProfileSelectorSheet(BuildContext context) {
+    final activeId = ref.read(activeProfileProvider);
+    final profiles = ref.read(profilesListProvider).valueOrNull ?? [];
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        decoration: BoxDecoration(
+          color: HermesTokens.bgElevated,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: HermesTokens.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "Session Agent Profile",
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: HermesTokens.textPrimary,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () {
+                      Navigator.of(ctx).pop();
+                      context.push('/agent-profiles');
+                    },
+                    child: Text(
+                      "Manage",
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: HermesTokens.accent,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              ...profiles.map((p) {
+                final isSelected = p.id == activeId;
+                final cleanModel = (p.model != null && p.model!.isNotEmpty)
+                    ? p.model!.split('/').last
+                    : 'Default model';
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(14),
+                    onTap: () async {
+                      await ref
+                          .read(activeProfileProvider.notifier)
+                          .setProfile(p.id);
+                      ref.invalidate(modelsProvider);
+                      ref.invalidate(sessionsProvider);
+                      if (ctx.mounted) Navigator.of(ctx).pop();
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: isSelected
+                          ? NeumorphicDecoration.recessed(radius: 14)
+                          : NeumorphicDecoration.raised(
+                              radius: 14,
+                              distance: 2,
+                              blur: 4,
+                            ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            Icons.person_outline_rounded,
+                            size: 18,
+                            color: isSelected
+                                ? HermesTokens.accent
+                                : HermesTokens.textMuted,
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  p.name,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: isSelected
+                                        ? FontWeight.w700
+                                        : FontWeight.w600,
+                                    color: isSelected
+                                        ? HermesTokens.accent
+                                        : HermesTokens.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  "$cleanModel · ${p.skillCount} skills",
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: HermesTokens.textMuted,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (isSelected)
+                            Icon(
+                              Icons.check_rounded,
+                              size: 18,
+                              color: HermesTokens.accent,
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1371,7 +2004,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         curve: Curves.easeOutQuad,
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
         decoration: isSelected
-            ? NeumorphicDecoration.raised(radius: 14, distance: 1.5, blur: 3, color: HermesTokens.bgPrimary)
+            ? NeumorphicDecoration.switcherThumb(radius: 14)
             : const BoxDecoration(),
         child: Row(
           mainAxisSize: MainAxisSize.min,
@@ -1379,7 +2012,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
             Icon(
               icon,
               size: 13,
-              color: isSelected ? HermesTokens.accentText : HermesTokens.textMuted,
+              color: isSelected
+                  ? HermesTokens.accentText
+                  : HermesTokens.textMuted,
             ),
             const SizedBox(width: 4),
             Text(
@@ -1387,7 +2022,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               style: TextStyle(
                 fontSize: 11,
                 fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                color: isSelected ? HermesTokens.textPrimary : HermesTokens.textMuted,
+                color: isSelected
+                    ? HermesTokens.textPrimary
+                    : HermesTokens.textMuted,
               ),
             ),
           ],
@@ -1398,8 +2035,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
 
   Widget _buildChatView(List<ChatMessage> messages, bool isGenerating) {
     if (_loadingSession) {
-      return const Center(
-        child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
+      return Center(
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          color: HermesTokens.accent,
+        ),
       );
     }
     if (messages.isEmpty && !isGenerating && !_streaming) {
@@ -1413,14 +2053,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 width: 56,
                 height: 56,
                 decoration: NeumorphicDecoration.raised(radius: 16),
-                child: const Icon(
+                child: Icon(
                   Icons.auto_awesome_rounded,
                   size: 26,
                   color: HermesTokens.accent,
                 ),
               ),
               const SizedBox(height: 18),
-              const Text(
+              Text(
                 "Start a conversation",
                 style: TextStyle(
                   fontSize: 18,
@@ -1429,19 +2069,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 ),
               ),
               const SizedBox(height: 6),
-              const Text(
+              Text(
                 "Type / for commands, or ask Hermes to code or automate.",
                 textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: HermesTokens.textMuted,
-                ),
+                style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
               ),
               const SizedBox(height: 20),
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const Text(
+                  Text(
                     "Suggested Prompts",
                     style: TextStyle(
                       fontSize: 11,
@@ -1459,16 +2096,25 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     },
                     borderRadius: BorderRadius.circular(10),
                     child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 3,
+                      ),
                       decoration: BoxDecoration(
                         color: HermesTokens.bgTertiary.withValues(alpha: 0.6),
                         borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: HermesTokens.border.withValues(alpha: 0.6)),
+                        border: Border.all(
+                          color: HermesTokens.border.withValues(alpha: 0.6),
+                        ),
                       ),
-                      child: const Row(
+                      child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.shuffle_rounded, size: 12, color: HermesTokens.accent),
+                          Icon(
+                            Icons.shuffle_rounded,
+                            size: 12,
+                            color: HermesTokens.accent,
+                          ),
                           SizedBox(width: 4),
                           Text(
                             "Shuffle",
@@ -1485,15 +2131,17 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 ],
               ),
               const SizedBox(height: 12),
-              ..._activeSuggestions.map((s) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _promptSuggestionCard(
-                  icon: s.icon,
-                  title: s.title,
-                  subtitle: s.subtitle,
-                  prompt: s.prompt,
+              ..._activeSuggestions.map(
+                (s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _promptSuggestionCard(
+                    icon: s.icon,
+                    title: s.title,
+                    subtitle: s.subtitle,
+                    prompt: s.prompt,
+                  ),
                 ),
-              )),
+              ),
             ],
           ),
         ),
@@ -1516,13 +2164,18 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 child: Padding(
                   padding: const EdgeInsets.only(top: 4, bottom: 16),
                   child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 3,
+                    ),
                     decoration: BoxDecoration(
                       color: HermesTokens.bgSecondary,
-                      borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                      borderRadius: BorderRadius.circular(
+                        HermesTokens.radiusSm,
+                      ),
                       border: Border.all(color: HermesTokens.border),
                     ),
-                    child: const Text(
+                    child: Text(
                       "TODAY",
                       style: TextStyle(
                         fontSize: 10,
@@ -1534,84 +2187,39 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   ),
                 ),
               ),
-            ChatBubble(message: msg),
+            ChatBubble(
+              message: msg,
+              onApprove: (id) => ref
+                  .read(chatProvider.notifier)
+                  .approveMobileAction(id, sessionId: widget.sessionId),
+              onReject: (id) => ref
+                  .read(chatProvider.notifier)
+                  .rejectMobileAction(id, sessionId: widget.sessionId),
+              onContinue: (id) => ref
+                  .read(chatProvider.notifier)
+                  .continueResponse(messageId: id, sessionId: widget.sessionId),
+            ),
           ],
         );
       },
     );
   }
 
-  Widget _buildVibeQuickChips() {
-    final chips = [
-      ("/fix", "Fix Errors", Icons.auto_fix_high_rounded),
-      ("/test", "Write Tests", Icons.checklist_rounded),
-      ("/explain", "Explain Code", Icons.menu_book_rounded),
-      ("/refactor", "Refactor", Icons.transform_rounded),
-      ("/plan", "Plan Strategy", Icons.assignment_outlined),
-    ];
-
-    return Container(
-      key: const ValueKey('vibe_quick_chips'),
-      height: 38,
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: const BoxDecoration(
-        color: HermesTokens.bgSecondary,
-        border: Border(
-          top: BorderSide(color: HermesTokens.border, width: 0.5),
-        ),
-      ),
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        itemCount: chips.length,
-        itemBuilder: (ctx, idx) {
-          final item = chips[idx];
-          return Padding(
-            padding: const EdgeInsets.only(right: 6, top: 4, bottom: 4),
-            child: InkWell(
-              onTap: () {
-                HapticFeedback.selectionClick();
-                _ctrl.text = "${item.$1} ";
-                _ctrl.selection = TextSelection.fromPosition(
-                  TextPosition(offset: _ctrl.text.length),
-                );
-              },
-              borderRadius: BorderRadius.circular(8),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                decoration: NeumorphicDecoration.raised(radius: 8, distance: 1.5, blur: 3),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(item.$3, size: 12, color: HermesTokens.accentText),
-                    const SizedBox(width: 5),
-                    Text(
-                      item.$2,
-                      style: const TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        color: HermesTokens.textPrimary,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-
-
   Widget _buildSlashCommandsPalette(List<_SlashCommandDef> commands) {
     return Container(
       key: const ValueKey('slash_commands_palette'),
       margin: const EdgeInsets.fromLTRB(14, 0, 14, 8),
       constraints: BoxConstraints(
-        maxHeight: (MediaQuery.of(context).size.height * 0.28).clamp(140.0, 220.0),
+        maxHeight: (MediaQuery.of(context).size.height * 0.28).clamp(
+          140.0,
+          220.0,
+        ),
       ),
-      decoration: NeumorphicDecoration.raised(radius: 16, distance: 3.5, blur: 8),
+      decoration: NeumorphicDecoration.raised(
+        radius: 16,
+        distance: 3.5,
+        blur: 8,
+      ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1619,9 +2227,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
             padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
             child: Row(
               children: [
-                const Icon(Icons.terminal_rounded, size: 14, color: HermesTokens.accent),
+                Icon(
+                  Icons.terminal_rounded,
+                  size: 14,
+                  color: HermesTokens.accent,
+                ),
                 const SizedBox(width: 6),
-                const Text(
+                Text(
                   "COMMANDS",
                   style: TextStyle(
                     fontSize: 10,
@@ -1636,12 +2248,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     _ctrl.clear();
                     setState(() {});
                   },
-                  child: const Icon(Icons.close_rounded, size: 16, color: HermesTokens.textMuted),
+                  child: Icon(
+                    Icons.close_rounded,
+                    size: 16,
+                    color: HermesTokens.textMuted,
+                  ),
                 ),
               ],
             ),
           ),
-          const Divider(height: 1, color: HermesTokens.border),
+          Divider(height: 1, color: HermesTokens.border),
           Flexible(
             child: ListView.separated(
               primary: false,
@@ -1650,25 +2266,33 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
               shrinkWrap: true,
               padding: const EdgeInsets.symmetric(vertical: 4),
               itemCount: commands.length,
-              separatorBuilder: (_, _) => const Divider(height: 1, color: HermesTokens.border),
+              separatorBuilder: (_, _) =>
+                  Divider(height: 1, color: HermesTokens.border),
               itemBuilder: (_, index) {
                 final cmd = commands[index];
                 return InkWell(
                   onTap: () => _handleSlashCommand(cmd),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 8,
+                    ),
                     child: Row(
                       children: [
                         Container(
                           width: 28,
                           height: 28,
                           decoration: NeumorphicDecoration.recessed(radius: 8),
-                          child: Icon(cmd.icon, size: 15, color: HermesTokens.accent),
+                          child: Icon(
+                            cmd.icon,
+                            size: 15,
+                            color: HermesTokens.accent,
+                          ),
                         ),
                         const SizedBox(width: 10),
                         Text(
                           cmd.command,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontFamily: 'JetBrains Mono',
                             fontWeight: FontWeight.w700,
                             fontSize: 12,
@@ -1681,7 +2305,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                             cmd.description,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 11,
                               color: HermesTokens.textMuted,
                             ),
@@ -1707,7 +2331,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-          side: const BorderSide(color: HermesTokens.borderBright),
+          side: BorderSide(color: HermesTokens.borderBright),
         ),
         insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         child: ConstrainedBox(
@@ -1724,10 +2348,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       width: 38,
                       height: 38,
                       decoration: NeumorphicDecoration.recessed(radius: 12),
-                      child: const Icon(Icons.analytics_rounded, size: 20, color: HermesTokens.accent),
+                      child: Icon(
+                        Icons.analytics_rounded,
+                        size: 20,
+                        color: HermesTokens.accent,
+                      ),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
@@ -1750,7 +2378,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.close, size: 18, color: HermesTokens.textMuted),
+                      icon: Icon(
+                        Icons.close,
+                        size: 18,
+                        color: HermesTokens.textMuted,
+                      ),
                       onPressed: () => Navigator.of(ctx).pop(),
                     ),
                   ],
@@ -1780,11 +2412,16 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     style: ElevatedButton.styleFrom(
                       backgroundColor: HermesTokens.accent,
                       foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                       elevation: 0,
                     ),
                     onPressed: () => Navigator.of(ctx).pop(),
-                    child: const Text("Close", style: TextStyle(fontWeight: FontWeight.w600)),
+                    child: const Text(
+                      "Close",
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
                   ),
                 ),
               ],
@@ -1801,10 +2438,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       children: [
         Text(
           label,
-          style: const TextStyle(
-            fontSize: 12,
-            color: HermesTokens.textMuted,
-          ),
+          style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
         ),
         Text(
           value,
@@ -1826,7 +2460,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-          side: const BorderSide(color: HermesTokens.borderBright),
+          side: BorderSide(color: HermesTokens.borderBright),
         ),
         insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
         child: ConstrainedBox(
@@ -1843,10 +2477,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       width: 38,
                       height: 38,
                       decoration: NeumorphicDecoration.recessed(radius: 12),
-                      child: const Icon(Icons.help_outline_rounded, size: 20, color: HermesTokens.accent),
+                      child: Icon(
+                        Icons.help_outline_rounded,
+                        size: 20,
+                        color: HermesTokens.accent,
+                      ),
                     ),
                     const SizedBox(width: 12),
-                    const Expanded(
+                    Expanded(
                       child: Text(
                         "Slash Commands",
                         style: TextStyle(
@@ -1857,38 +2495,44 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.close, size: 18, color: HermesTokens.textMuted),
+                      icon: Icon(
+                        Icons.close,
+                        size: 18,
+                        color: HermesTokens.textMuted,
+                      ),
                       onPressed: () => Navigator.of(ctx).pop(),
                     ),
                   ],
                 ),
                 const SizedBox(height: 14),
-                ..._allSlashCommands.map((c) => Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        children: [
-                          Text(
-                            c.command,
-                            style: const TextStyle(
-                              fontFamily: 'JetBrains Mono',
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: HermesTokens.accentText,
+                ..._allSlashCommands.map(
+                  (c) => Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Text(
+                          c.command,
+                          style: TextStyle(
+                            fontFamily: 'JetBrains Mono',
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: HermesTokens.accentText,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            c.description,
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: HermesTokens.textMuted,
                             ),
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              c.description,
-                              style: const TextStyle(
-                                fontSize: 11,
-                                color: HermesTokens.textMuted,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    )),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -1911,7 +2555,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
       child: Container(
         width: double.infinity,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: NeumorphicDecoration.raised(radius: 14, distance: 3, blur: 6),
+        decoration: NeumorphicDecoration.raised(
+          radius: 14,
+          distance: 3,
+          blur: 6,
+        ),
         child: Row(
           children: [
             Container(
@@ -1927,7 +2575,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       fontWeight: FontWeight.w600,
                       color: HermesTokens.textPrimary,
@@ -1936,7 +2584,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11,
                       color: HermesTokens.textMuted,
                     ),
@@ -1944,14 +2592,22 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                 ],
               ),
             ),
-            const Icon(Icons.arrow_forward_ios_rounded, size: 12, color: HermesTokens.textMuted),
+            Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 12,
+              color: HermesTokens.textMuted,
+            ),
           ],
         ),
       ),
     );
   }
 
-  void _showModelSheet(BuildContext context, List<ModelConfig> models, String current) {
+  void _showModelSheet(
+    BuildContext context,
+    List<ModelConfig> models,
+    String current,
+  ) {
     final conn = ref.read(connectionProvider).valueOrNull;
     if (conn == null) return;
 
@@ -1967,9 +2623,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
           builder: (ctx, setModalState) {
             return Container(
               height: MediaQuery.of(context).size.height * 0.78,
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 color: HermesTokens.bgPrimary,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(HermesTokens.radiusLg)),
+                borderRadius: BorderRadius.vertical(
+                  top: Radius.circular(HermesTokens.radiusLg),
+                ),
               ),
               padding: const EdgeInsets.fromLTRB(18, 12, 18, 20),
               child: Column(
@@ -1988,7 +2646,7 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                   const SizedBox(height: 14),
                   Row(
                     children: [
-                      const Text(
+                      Text(
                         "Select Model",
                         style: TextStyle(
                           fontSize: 16,
@@ -1999,7 +2657,11 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                       const Spacer(),
                       IconButton(
                         onPressed: () => Navigator.of(ctx).pop(),
-                        icon: const Icon(Icons.close_rounded, size: 20, color: HermesTokens.textMuted),
+                        icon: Icon(
+                          Icons.close_rounded,
+                          size: 20,
+                          color: HermesTokens.textMuted,
+                        ),
                         padding: EdgeInsets.zero,
                         constraints: const BoxConstraints(),
                         splashRadius: 20,
@@ -2012,24 +2674,44 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     child: Row(
                       children: [
-                        const Icon(Icons.search_rounded, size: 18, color: HermesTokens.textMuted),
+                        Icon(
+                          Icons.search_rounded,
+                          size: 18,
+                          color: HermesTokens.textMuted,
+                        ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: TextField(
-                            onChanged: (val) => setModalState(() => searchQuery = val),
-                            style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
-                            decoration: const InputDecoration(
-                              hintText: "Search models, provider, or family...",
-                              hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                            onChanged: (val) =>
+                                setModalState(() => searchQuery = val),
+                            style: TextStyle(
+                              color: HermesTokens.textPrimary,
+                              fontSize: 13,
+                            ),
+                            decoration: InputDecoration(
+                              filled: false,
                               border: InputBorder.none,
-                              contentPadding: EdgeInsets.symmetric(vertical: 10),
+                              enabledBorder: InputBorder.none,
+                              focusedBorder: InputBorder.none,
+                              hintText: "Search models...",
+                              hintStyle: TextStyle(
+                                color: HermesTokens.textMuted,
+                                fontSize: 13,
+                              ),
+                              contentPadding: const EdgeInsets.symmetric(
+                                vertical: 12,
+                              ),
                             ),
                           ),
                         ),
                         if (searchQuery.isNotEmpty)
                           GestureDetector(
                             onTap: () => setModalState(() => searchQuery = ""),
-                            child: const Icon(Icons.clear_rounded, size: 18, color: HermesTokens.textMuted),
+                            child: Icon(
+                              Icons.clear_rounded,
+                              size: 18,
+                              color: HermesTokens.textMuted,
+                            ),
                           ),
                       ],
                     ),
@@ -2039,14 +2721,18 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                     child: FutureBuilder<List<ModelConfig>>(
                       future: conn.getModels(),
                       builder: (context, snap) {
-                        if (snap.connectionState == ConnectionState.waiting && models.isEmpty) {
-                          return const Center(
-                            child: CircularProgressIndicator(color: HermesTokens.accent),
+                        if (snap.connectionState == ConnectionState.waiting &&
+                            models.isEmpty) {
+                          return Center(
+                            child: CircularProgressIndicator(
+                              color: HermesTokens.accent,
+                            ),
                           );
                         }
                         final allList = snap.data ?? models;
-                        if (allList.isEmpty && snap.connectionState != ConnectionState.waiting) {
-                          return const Center(
+                        if (allList.isEmpty &&
+                            snap.connectionState != ConnectionState.waiting) {
+                          return Center(
                             child: Padding(
                               padding: EdgeInsets.all(16),
                               child: Text(
@@ -2058,22 +2744,33 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                         }
 
                         final availableFilters = <String>['All'];
-                        final hasFree = allList.any((m) =>
-                            m.name.toLowerCase().contains(':free') ||
-                            m.name.toLowerCase().contains('free'));
-                        if (hasFree) availableFilters.add('Free');
+                        final hasFree = allList.any(
+                          (m) =>
+                              m.name.toLowerCase().contains(':free') ||
+                              m.name.toLowerCase().contains('free'),
+                        );
+                        if (hasFree) {
+                          availableFilters.add('Free');
+                        }
 
                         final detectedFamilies = <String>{};
                         for (final m in allList) {
                           final l = m.name.toLowerCase();
                           final p = m.provider.toLowerCase();
-                          if (l.contains('claude') || l.contains('anthropic') || p.contains('anthropic')) {
+                          if (l.contains('claude') ||
+                              l.contains('anthropic') ||
+                              p.contains('anthropic')) {
                             detectedFamilies.add('Claude');
-                          } else if (l.contains('gpt') || l.contains('openai') || p.contains('openai')) {
+                          } else if (l.contains('gpt') ||
+                              l.contains('openai') ||
+                              p.contains('openai')) {
                             detectedFamilies.add('GPT');
-                          } else if (l.contains('gemini') || l.contains('google') || p.contains('google')) {
+                          } else if (l.contains('gemini') ||
+                              l.contains('google') ||
+                              p.contains('google')) {
                             detectedFamilies.add('Gemini');
-                          } else if (l.contains('llama') || l.contains('meta')) {
+                          } else if (l.contains('llama') ||
+                              l.contains('meta')) {
                             detectedFamilies.add('Llama');
                           } else if (l.contains('deepseek')) {
                             detectedFamilies.add('DeepSeek');
@@ -2091,21 +2788,43 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                           final p = m.provider.toLowerCase();
 
                           if (selectedFilter == 'Free') {
-                            if (!l.contains(':free') && !l.contains('free')) return false;
+                            if (!l.contains(':free') && !l.contains('free')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'Claude') {
-                            if (!l.contains('claude') && !l.contains('anthropic') && !p.contains('anthropic')) return false;
+                            if (!l.contains('claude') &&
+                                !l.contains('anthropic') &&
+                                !p.contains('anthropic')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'GPT') {
-                            if (!l.contains('gpt') && !l.contains('openai') && !p.contains('openai')) return false;
+                            if (!l.contains('gpt') &&
+                                !l.contains('openai') &&
+                                !p.contains('openai')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'Gemini') {
-                            if (!l.contains('gemini') && !l.contains('google') && !p.contains('google')) return false;
+                            if (!l.contains('gemini') &&
+                                !l.contains('google') &&
+                                !p.contains('google')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'Llama') {
-                            if (!l.contains('llama') && !l.contains('meta')) return false;
+                            if (!l.contains('llama') && !l.contains('meta')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'DeepSeek') {
-                            if (!l.contains('deepseek')) return false;
+                            if (!l.contains('deepseek')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'Qwen') {
-                            if (!l.contains('qwen')) return false;
+                            if (!l.contains('qwen')) {
+                              return false;
+                            }
                           } else if (selectedFilter == 'Mistral') {
-                            if (!l.contains('mistral')) return false;
+                            if (!l.contains('mistral')) {
+                              return false;
+                            }
                           }
 
                           if (q.isNotEmpty) {
@@ -2129,18 +2848,26 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                 scrollDirection: Axis.horizontal,
                                 physics: const BouncingScrollPhysics(),
                                 itemCount: availableFilters.length,
-                                separatorBuilder: (_, _) => const SizedBox(width: 6),
+                                separatorBuilder: (_, _) =>
+                                    const SizedBox(width: 6),
                                 itemBuilder: (context, chipIdx) {
                                   final chip = availableFilters[chipIdx];
                                   final isChipSelected = selectedFilter == chip;
                                   return GestureDetector(
                                     onTap: () {
                                       HapticFeedback.selectionClick();
-                                      setModalState(() => selectedFilter = chip);
+                                      setModalState(
+                                        () => selectedFilter = chip,
+                                      );
                                     },
                                     child: AnimatedContainer(
-                                      duration: const Duration(milliseconds: 180),
-                                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                      duration: const Duration(
+                                        milliseconds: 180,
+                                      ),
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 12,
+                                        vertical: 6,
+                                      ),
                                       decoration: BoxDecoration(
                                         color: isChipSelected
                                             ? HermesTokens.accent
@@ -2149,7 +2876,8 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                         border: Border.all(
                                           color: isChipSelected
                                               ? HermesTokens.accent
-                                              : HermesTokens.borderBright.withValues(alpha: 0.6),
+                                              : HermesTokens.borderBright
+                                                    .withValues(alpha: 0.6),
                                           width: 0.8,
                                         ),
                                       ),
@@ -2157,8 +2885,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                         chip,
                                         style: TextStyle(
                                           fontSize: 12,
-                                          fontWeight: isChipSelected ? FontWeight.w700 : FontWeight.w500,
-                                          color: isChipSelected ? Colors.white : HermesTokens.textMuted,
+                                          fontWeight: isChipSelected
+                                              ? FontWeight.w700
+                                              : FontWeight.w500,
+                                          color: isChipSelected
+                                              ? Colors.white
+                                              : HermesTokens.textMuted,
                                         ),
                                       ),
                                     ),
@@ -2168,10 +2900,13 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                             ),
                             const SizedBox(height: 8),
                             Padding(
-                              padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 4),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 2,
+                                vertical: 4,
+                              ),
                               child: Text(
                                 "${filteredList.length} models available",
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 11,
                                   fontWeight: FontWeight.w500,
                                   color: HermesTokens.textMuted,
@@ -2188,7 +2923,9 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                           q.isNotEmpty
                                               ? "No models matching \"$searchQuery\""
                                               : "No models in this category",
-                                          style: const TextStyle(color: HermesTokens.textMuted),
+                                          style: TextStyle(
+                                            color: HermesTokens.textMuted,
+                                          ),
                                         ),
                                       ),
                                     )
@@ -2198,37 +2935,63 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                       itemBuilder: (context, index) {
                                         final m = filteredList[index];
                                         final isSelected = m.name == current;
-                                        final info = _ParsedModelInfo.fromConfig(m);
+                                        final info =
+                                            _ParsedModelInfo.fromConfig(m);
 
                                         return Container(
-                                          margin: const EdgeInsets.only(bottom: 6),
+                                          margin: const EdgeInsets.only(
+                                            bottom: 6,
+                                          ),
                                           decoration: BoxDecoration(
                                             color: isSelected
-                                                ? HermesTokens.accent.withValues(alpha: 0.1)
-                                                : HermesTokens.bgSecondary.withValues(alpha: 0.5),
-                                            borderRadius: BorderRadius.circular(10),
+                                                ? HermesTokens.accent
+                                                      .withValues(alpha: 0.1)
+                                                : HermesTokens.bgSecondary
+                                                      .withValues(alpha: 0.5),
+                                            borderRadius: BorderRadius.circular(
+                                              10,
+                                            ),
                                             border: Border.all(
                                               color: isSelected
-                                                  ? HermesTokens.accent.withValues(alpha: 0.4)
-                                                  : HermesTokens.borderBright.withValues(alpha: 0.4),
+                                                  ? HermesTokens.accent
+                                                        .withValues(alpha: 0.4)
+                                                  : HermesTokens.borderBright
+                                                        .withValues(alpha: 0.4),
                                               width: isSelected ? 1.2 : 0.8,
                                             ),
                                           ),
                                           child: Material(
                                             color: Colors.transparent,
                                             child: InkWell(
-                                              borderRadius: BorderRadius.circular(10),
+                                              borderRadius:
+                                                  BorderRadius.circular(10),
                                               onTap: () async {
                                                 HapticFeedback.selectionClick();
-                                                ref.read(selectedModelProvider.notifier).state = m.name;
+                                                ref
+                                                        .read(
+                                                          selectedModelProvider
+                                                              .notifier,
+                                                        )
+                                                        .state =
+                                                    m.name;
                                                 Navigator.of(ctx).pop();
                                                 try {
-                                                  await conn.setModelEnabled(m.name, true, provider: m.provider);
-                                                  ref.invalidate(modelsProvider);
+                                                  await conn.setModelEnabled(
+                                                    m.name,
+                                                    true,
+                                                    provider: m.provider,
+                                                  );
+                                                  ref.invalidate(
+                                                    modelsProvider,
+                                                  );
                                                 } catch (_) {}
                                               },
                                               child: Padding(
-                                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                                                padding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 12,
+                                                      vertical: 8,
+                                                    ),
                                                 child: Row(
                                                   children: [
                                                     Container(
@@ -2236,27 +2999,42 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                                       height: 32,
                                                       decoration: BoxDecoration(
                                                         color: isSelected
-                                                            ? HermesTokens.accent.withValues(alpha: 0.18)
-                                                            : HermesTokens.bgTertiary,
-                                                        borderRadius: BorderRadius.circular(8),
+                                                            ? HermesTokens
+                                                                  .accent
+                                                                  .withValues(
+                                                                    alpha: 0.18,
+                                                                  )
+                                                            : HermesTokens
+                                                                  .bgTertiary,
+                                                        borderRadius:
+                                                            BorderRadius.circular(
+                                                              8,
+                                                            ),
                                                       ),
                                                       child: Center(
                                                         child: Icon(
                                                           isSelected
-                                                              ? Icons.auto_awesome_rounded
-                                                              : Icons.smart_toy_outlined,
+                                                              ? Icons
+                                                                    .auto_awesome_rounded
+                                                              : Icons
+                                                                    .smart_toy_outlined,
                                                           size: 16,
                                                           color: isSelected
-                                                              ? HermesTokens.accent
-                                                              : HermesTokens.textMuted,
+                                                              ? HermesTokens
+                                                                    .accent
+                                                              : HermesTokens
+                                                                    .textMuted,
                                                         ),
                                                       ),
                                                     ),
                                                     const SizedBox(width: 10),
                                                     Expanded(
                                                       child: Column(
-                                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                                        mainAxisSize: MainAxisSize.min,
+                                                        crossAxisAlignment:
+                                                            CrossAxisAlignment
+                                                                .start,
+                                                        mainAxisSize:
+                                                            MainAxisSize.min,
                                                         children: [
                                                           Row(
                                                             children: [
@@ -2264,59 +3042,98 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                                                 child: Text(
                                                                   info.cleanName,
                                                                   style: TextStyle(
-                                                                    fontSize: 13,
-                                                                    fontWeight: isSelected
-                                                                        ? FontWeight.w700
-                                                                        : FontWeight.w600,
-                                                                    color: isSelected
-                                                                        ? HermesTokens.accent
-                                                                        : HermesTokens.textPrimary,
+                                                                    fontSize:
+                                                                        13,
+                                                                    fontWeight:
+                                                                        isSelected
+                                                                        ? FontWeight
+                                                                              .w700
+                                                                        : FontWeight
+                                                                              .w600,
+                                                                    color:
+                                                                        isSelected
+                                                                        ? HermesTokens
+                                                                              .accent
+                                                                        : HermesTokens
+                                                                              .textPrimary,
                                                                   ),
                                                                   maxLines: 1,
-                                                                  overflow: TextOverflow.ellipsis,
+                                                                  overflow:
+                                                                      TextOverflow
+                                                                          .ellipsis,
                                                                 ),
                                                               ),
-                                                              if (info.tag != null) ...[
-                                                                const SizedBox(width: 6),
+                                                              if (info.tag !=
+                                                                  null) ...[
+                                                                const SizedBox(
+                                                                  width: 6,
+                                                                ),
                                                                 Container(
-                                                                  padding: const EdgeInsets.symmetric(
-                                                                      horizontal: 5, vertical: 1.5),
+                                                                  padding:
+                                                                      const EdgeInsets.symmetric(
+                                                                        horizontal:
+                                                                            5,
+                                                                        vertical:
+                                                                            1.5,
+                                                                      ),
                                                                   decoration: BoxDecoration(
-                                                                    color: info.isFree
-                                                                        ? HermesTokens.success
-                                                                            .withValues(alpha: 0.15)
-                                                                        : HermesTokens.accent
-                                                                            .withValues(alpha: 0.15),
-                                                                    borderRadius: BorderRadius.circular(4),
+                                                                    color:
+                                                                        info.isFree
+                                                                        ? HermesTokens.success.withValues(
+                                                                            alpha:
+                                                                                0.15,
+                                                                          )
+                                                                        : HermesTokens.accent.withValues(
+                                                                            alpha:
+                                                                                0.15,
+                                                                          ),
+                                                                    borderRadius:
+                                                                        BorderRadius.circular(
+                                                                          4,
+                                                                        ),
                                                                   ),
                                                                   child: Text(
                                                                     info.tag!,
                                                                     style: TextStyle(
-                                                                      fontSize: 9,
-                                                                      fontWeight: FontWeight.w700,
-                                                                      color: info.isFree
+                                                                      fontSize:
+                                                                          9,
+                                                                      fontWeight:
+                                                                          FontWeight
+                                                                              .w700,
+                                                                      color:
+                                                                          info.isFree
                                                                           ? HermesTokens.success
                                                                           : HermesTokens.accent,
-                                                                      letterSpacing: 0.5,
+                                                                      letterSpacing:
+                                                                          0.5,
                                                                     ),
                                                                   ),
                                                                 ),
                                                               ],
                                                             ],
                                                           ),
-                                                          const SizedBox(height: 2),
+                                                          const SizedBox(
+                                                            height: 2,
+                                                          ),
                                                           Text(
-                                                            info.namespace.isNotEmpty
+                                                            info
+                                                                    .namespace
+                                                                    .isNotEmpty
                                                                 ? "${info.namespace} • ${info.provider.isNotEmpty ? info.provider : info.rawId}"
-                                                                : (info.provider.isNotEmpty
-                                                                    ? info.provider
-                                                                    : info.rawId),
-                                                            style: const TextStyle(
+                                                                : (info
+                                                                          .provider
+                                                                          .isNotEmpty
+                                                                      ? info.provider
+                                                                      : info.rawId),
+                                                            style: TextStyle(
                                                               fontSize: 11,
-                                                              color: HermesTokens.textMuted,
+                                                              color: HermesTokens
+                                                                  .textMuted,
                                                             ),
                                                             maxLines: 1,
-                                                            overflow: TextOverflow.ellipsis,
+                                                            overflow:
+                                                                TextOverflow
+                                                                    .ellipsis,
                                                           ),
                                                         ],
                                                       ),
@@ -2326,10 +3143,14 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                                       Container(
                                                         width: 20,
                                                         height: 20,
-                                                        decoration: const BoxDecoration(
-                                                          color: HermesTokens.accent,
-                                                          shape: BoxShape.circle,
-                                                        ),
+                                                        decoration:
+                                                            BoxDecoration(
+                                                              color:
+                                                                  HermesTokens
+                                                                      .accent,
+                                                              shape: BoxShape
+                                                                  .circle,
+                                                            ),
                                                         child: const Icon(
                                                           Icons.check_rounded,
                                                           size: 13,
@@ -2337,10 +3158,12 @@ class _ChatRoomScreenState extends ConsumerState<ChatRoomScreen> {
                                                         ),
                                                       )
                                                     else
-                                                      const Icon(
-                                                        Icons.chevron_right_rounded,
+                                                      Icon(
+                                                        Icons
+                                                            .chevron_right_rounded,
                                                         size: 16,
-                                                        color: HermesTokens.textMuted,
+                                                        color: HermesTokens
+                                                            .textMuted,
                                                       ),
                                                   ],
                                                 ),
@@ -2420,23 +3243,25 @@ class _ParsedModelInfo {
   static String _cleanFormat(String name) {
     if (name.isEmpty) return name;
     final segments = name.split(RegExp(r'[-_]'));
-    return segments.map((seg) {
-      if (seg.isEmpty) return '';
-      final lower = seg.toLowerCase();
-      if (lower == 'gpt') return 'GPT';
-      if (lower == 'claude') return 'Claude';
-      if (lower == 'llama') return 'Llama';
-      if (lower == 'gemini') return 'Gemini';
-      if (lower == 'deepseek') return 'DeepSeek';
-      if (lower == 'qwen') return 'Qwen';
-      if (lower == 'mistral') return 'Mistral';
-      if (lower == 'instruct') return 'Instruct';
-      if (lower == 'flash') return 'Flash';
-      if (lower == 'pro') return 'Pro';
-      if (lower == 'sonnet') return 'Sonnet';
-      if (lower == 'opus') return 'Opus';
-      if (lower == 'haiku') return 'Haiku';
-      return seg[0].toUpperCase() + seg.substring(1);
-    }).join(' ');
+    return segments
+        .map((seg) {
+          if (seg.isEmpty) return '';
+          final lower = seg.toLowerCase();
+          if (lower == 'gpt') return 'GPT';
+          if (lower == 'claude') return 'Claude';
+          if (lower == 'llama') return 'Llama';
+          if (lower == 'gemini') return 'Gemini';
+          if (lower == 'deepseek') return 'DeepSeek';
+          if (lower == 'qwen') return 'Qwen';
+          if (lower == 'mistral') return 'Mistral';
+          if (lower == 'instruct') return 'Instruct';
+          if (lower == 'flash') return 'Flash';
+          if (lower == 'pro') return 'Pro';
+          if (lower == 'sonnet') return 'Sonnet';
+          if (lower == 'opus') return 'Opus';
+          if (lower == 'haiku') return 'Haiku';
+          return seg[0].toUpperCase() + seg.substring(1);
+        })
+        .join(' ');
   }
 }

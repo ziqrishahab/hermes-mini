@@ -126,6 +126,31 @@ class ScheduleDetailScreen extends ConsumerStatefulWidget {
 
 class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
   bool _running = false;
+  List<Map<String, dynamic>> _runs = [];
+  bool _loadingRuns = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchRuns();
+  }
+
+  Future<void> _fetchRuns() async {
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn == null) return;
+    setState(() => _loadingRuns = true);
+    try {
+      final runs = await conn.getCronJobRuns(widget.scheduleId);
+      if (mounted) {
+        setState(() {
+          _runs = runs;
+          _loadingRuns = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingRuns = false);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -137,10 +162,10 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
         backgroundColor: HermesTokens.bgPrimary,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: HermesTokens.textPrimary),
+          icon: Icon(Icons.arrow_back, color: HermesTokens.textPrimary),
           onPressed: () => context.pop(),
         ),
-        title: const Text(
+        title: Text(
           "Schedule Detail",
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
@@ -153,7 +178,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
           }
           return _buildContent(schedule);
         },
-        loading: () => const Center(child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent)),
+        loading: () => Center(child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent)),
         error: (e, _) => _buildError(e.toString()),
       ),
     );
@@ -172,10 +197,10 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
               borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
               border: Border.all(color: HermesTokens.border),
             ),
-            child: const Icon(Icons.search_off, size: 24, color: HermesTokens.textMuted),
+            child: Icon(Icons.search_off, size: 24, color: HermesTokens.textMuted),
           ),
           const SizedBox(height: 16),
-          const Text("Schedule not found", style: TextStyle(color: HermesTokens.textMuted, fontSize: 14)),
+          Text("Schedule not found", style: TextStyle(color: HermesTokens.textMuted, fontSize: 14)),
           const SizedBox(height: 16),
           FilledButton(
             onPressed: () => context.pop(),
@@ -248,7 +273,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
                           Expanded(
                             child: Text(
                               name,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.w600,
                                 color: HermesTokens.textPrimary,
@@ -283,14 +308,14 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
                         const SizedBox(height: 4),
                         Text(
                           "Last executed: $lastRun",
-                          style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                          style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                         ),
                       ],
                       const SizedBox(height: 8),
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          const Text(
+                          Text(
                             "Schedule Status",
                             style: TextStyle(fontSize: 12, color: HermesTokens.textSecondary),
                           ),
@@ -317,7 +342,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
                 const SizedBox(height: 18),
 
                 // CRON CONFIGURATION
-                const Text(
+                Text(
                   "CRON CONFIGURATION",
                   style: TextStyle(
                     fontSize: 11,
@@ -341,7 +366,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
                 const SizedBox(height: 18),
 
                 // NEXT RUN
-                const Text(
+                Text(
                   "NEXT RUN ESTIMATE",
                   style: TextStyle(
                     fontSize: 11,
@@ -362,7 +387,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
 
                 if (target.isNotEmpty) ...[
                   const SizedBox(height: 18),
-                  const Text(
+                  Text(
                     "TARGET DESTINATION",
                     style: TextStyle(
                       fontSize: 11,
@@ -382,16 +407,17 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.send_outlined, size: 16, color: HermesTokens.textSecondary),
+                        Icon(Icons.send_outlined, size: 16, color: HermesTokens.textSecondary),
                         const SizedBox(width: 8),
                         Text(
                           target,
-                          style: const TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
+                          style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
                         ),
                       ],
                     ),
                   ),
                 ],
+                _buildExecutionHistorySection(),
               ],
             ),
           ),
@@ -400,7 +426,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
         // Bottom actions
         Container(
           padding: const EdgeInsets.all(16),
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: HermesTokens.bgSecondary,
             border: Border(top: BorderSide(color: HermesTokens.border)),
           ),
@@ -437,7 +463,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
                       label: const Text("Edit Schedule", style: TextStyle(fontSize: 13)),
                       style: OutlinedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 10),
-                        side: const BorderSide(color: HermesTokens.borderBright),
+                        side: BorderSide(color: HermesTokens.borderBright),
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(HermesTokens.radiusSm)),
                       ),
                     ),
@@ -481,14 +507,14 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
               const SizedBox(width: 4),
               Text(
                 label,
-                style: const TextStyle(fontSize: 10, color: HermesTokens.textMuted),
+                style: TextStyle(fontSize: 10, color: HermesTokens.textMuted),
               ),
             ],
           ),
           const SizedBox(height: 4),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.w500,
               color: HermesTokens.textPrimary,
@@ -518,14 +544,14 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
               const SizedBox(width: 4),
               Text(
                 label,
-                style: const TextStyle(fontSize: 10, color: HermesTokens.textMuted),
+                style: TextStyle(fontSize: 10, color: HermesTokens.textMuted),
               ),
             ],
           ),
           const SizedBox(height: 4),
           Text(
             value,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 12,
               fontWeight: FontWeight.w600,
               color: HermesTokens.textPrimary,
@@ -544,6 +570,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
       if (conn != null) {
         await conn.updateSchedule(widget.scheduleId, {...schedule, 'enabled': enabled});
         ref.invalidate(scheduleDetailProvider(widget.scheduleId));
+        _fetchRuns();
       }
     } catch (e) {
       if (mounted) {
@@ -558,10 +585,143 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
     }
   }
 
+  Widget _buildExecutionHistorySection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 18),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              "RECENT EXECUTION LOGS",
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: HermesTokens.textMuted,
+                letterSpacing: 0.5,
+              ),
+            ),
+            InkWell(
+              onTap: _loadingRuns ? null : _fetchRuns,
+              borderRadius: BorderRadius.circular(6),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.refresh_rounded, size: 12, color: HermesTokens.textMuted),
+                    const SizedBox(width: 4),
+                    Text("Refresh", style: TextStyle(fontSize: 10, color: HermesTokens.textMuted)),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (_loadingRuns)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+          )
+        else if (_runs.isEmpty)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: HermesTokens.bgSecondary,
+              borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+              border: Border.all(color: HermesTokens.border),
+            ),
+            child: Text(
+              "No execution logs recorded yet. Tap 'Trigger Run Now' to execute.",
+              style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+            ),
+          )
+        else
+          ..._runs.map((run) {
+            final status = run['status']?.toString().toLowerCase() ?? 'completed';
+            final isSuccess = status == 'success' || status == 'completed';
+            final timestamp = run['started_at'] ?? run['timestamp'] ?? run['created_at'] ?? '';
+            final output = run['output'] ?? run['error'] ?? run['result'] ?? '';
+
+            return Container(
+              margin: const EdgeInsets.only(bottom: 8),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: HermesTokens.bgSecondary,
+                borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
+                border: Border.all(color: HermesTokens.border),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isSuccess ? HermesTokens.success : HermesTokens.error,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        isSuccess ? "Success" : "Failed",
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: isSuccess ? HermesTokens.success : HermesTokens.error,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        timestamp.toString(),
+                        style: TextStyle(fontSize: 10.5, color: HermesTokens.textMuted),
+                      ),
+                    ],
+                  ),
+                  if (output.toString().isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(8),
+                      decoration: NeumorphicDecoration.recessed(radius: 8),
+                      child: Text(
+                        output.toString(),
+                        maxLines: 4,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: 11,
+                          color: HermesTokens.textSecondary,
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            );
+          }),
+      ],
+    );
+  }
+
   Future<void> _runNow(Map<String, dynamic> schedule) async {
     setState(() => _running = true);
     try {
-      await Future.delayed(const Duration(milliseconds: 600));
+      final conn = ref.read(connectionProvider).valueOrNull;
+      if (conn != null) {
+        final ok = await conn.triggerSchedule(widget.scheduleId);
+        if (!ok) {
+          throw Exception("Backend failed to execute schedule run");
+        }
+        await _fetchRuns();
+      } else {
+        throw Exception("Not connected to Hermes");
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -587,7 +747,7 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
   }
 
   void _editSchedule(Map<String, dynamic> schedule) {
-    context.push('/schedule/${widget.scheduleId}/edit');
+    context.push('/schedule/${widget.scheduleId}/edit', extra: schedule);
   }
 
   Future<void> _deleteSchedule(Map<String, dynamic> schedule) async {
@@ -597,20 +757,20 @@ class _ScheduleDetailScreenState extends ConsumerState<ScheduleDetailScreen> {
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-          side: const BorderSide(color: HermesTokens.borderBright),
+          side: BorderSide(color: HermesTokens.borderBright),
         ),
-        title: const Text(
+        title: Text(
           "Delete Schedule?",
           style: TextStyle(color: HermesTokens.textPrimary, fontSize: 16, fontWeight: FontWeight.w600),
         ),
-        content: const Text(
+        content: Text(
           "This schedule will be permanently removed. This action cannot be undone.",
           style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),

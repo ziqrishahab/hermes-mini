@@ -66,7 +66,7 @@ class SessionListSkeleton extends StatelessWidget {
               Container(
                 width: 42,
                 height: 42,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: HermesTokens.bgTertiary,
                   shape: BoxShape.circle,
                 ),
@@ -288,7 +288,7 @@ class ModelListSkeleton extends StatelessWidget {
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
         itemCount: count,
-        separatorBuilder: (_, index) => const Divider(height: 1, color: HermesTokens.divider),
+        separatorBuilder: (_, index) => Divider(height: 1, color: HermesTokens.divider),
         itemBuilder: (_, index) => Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
           child: Row(
@@ -306,7 +306,7 @@ class ModelListSkeleton extends StatelessWidget {
               Container(
                 width: 20,
                 height: 20,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: HermesTokens.bgTertiary,
                   shape: BoxShape.circle,
                 ),

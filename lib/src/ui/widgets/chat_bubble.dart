@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import '../../models/chat_message.dart';
 import '../../theme.dart';
 import 'markdown_body.dart';
@@ -111,6 +113,66 @@ _ParsedMessage _parseThinking(String raw) {
     text = text.substring(0, openToolMatch.start).trim();
   }
 
+  // 5. Extract completed mobile_action blocks
+  final mobileMdRegex = RegExp(r'```mobile_action\s*([\s\S]*?)```', caseSensitive: false);
+  for (final m in mobileMdRegex.allMatches(text)) {
+    final rawJson = m.group(1)?.trim() ?? '';
+    String actName = 'mobile_action';
+    try {
+      final decoded = jsonDecode(rawJson);
+      if (decoded is Map && decoded['action'] != null) {
+        actName = 'mobile_${decoded['action']}';
+      }
+    } catch (_) {}
+    toolCalls.add(_ParsedToolCall(
+      name: actName,
+      input: rawJson,
+      status: 'completed',
+      output: null,
+    ));
+  }
+  text = text.replaceAll(mobileMdRegex, '').trim();
+
+  final mobileTagRegex = RegExp(r'<mobile_action>([\s\S]*?)</mobile_action>', caseSensitive: false);
+  for (final m in mobileTagRegex.allMatches(text)) {
+    final rawJson = m.group(1)?.trim() ?? '';
+    String actName = 'mobile_action';
+    try {
+      final decoded = jsonDecode(rawJson);
+      if (decoded is Map && decoded['action'] != null) {
+        actName = 'mobile_${decoded['action']}';
+      }
+    } catch (_) {}
+    toolCalls.add(_ParsedToolCall(
+      name: actName,
+      input: rawJson,
+      status: 'completed',
+      output: null,
+    ));
+  }
+  text = text.replaceAll(mobileTagRegex, '').trim();
+
+  // 6. Extract streaming unclosed mobile_action
+  final openMobileMdRegex = RegExp(r'```mobile_action\s*([\s\S]*)$', caseSensitive: false);
+  final openMobileMdMatch = openMobileMdRegex.firstMatch(text);
+  if (openMobileMdMatch != null) {
+    final rawJson = openMobileMdMatch.group(1)?.trim() ?? '';
+    String actName = 'mobile_action';
+    try {
+      final decoded = jsonDecode(rawJson);
+      if (decoded is Map && decoded['action'] != null) {
+        actName = 'mobile_${decoded['action']}';
+      }
+    } catch (_) {}
+    toolCalls.add(_ParsedToolCall(
+      name: actName,
+      input: rawJson,
+      status: 'running',
+      output: null,
+    ));
+    text = text.substring(0, openMobileMdMatch.start).trim();
+  }
+
   return _ParsedMessage(
     thinkingContent: thinking,
     isThinkingComplete: isThinkingComplete,
@@ -121,8 +183,17 @@ _ParsedMessage _parseThinking(String raw) {
 
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
+  final void Function(String messageId)? onApprove;
+  final void Function(String messageId)? onReject;
+  final void Function(String messageId)? onContinue;
 
-  const ChatBubble({super.key, required this.message});
+  const ChatBubble({
+    super.key,
+    required this.message,
+    this.onApprove,
+    this.onReject,
+    this.onContinue,
+  });
 
   String _formatTime(DateTime dt) {
     final h = dt.hour > 12 ? dt.hour - 12 : (dt.hour == 0 ? 12 : dt.hour);
@@ -139,8 +210,34 @@ class ChatBubble extends StatelessWidget {
 
     // Clean any injected device capability prompt from user bubble display
     String userDisplayContent = message.content;
-    if (isUser && userDisplayContent.contains('[DEVICE CONTROL CAPABILITY]')) {
-      userDisplayContent = userDisplayContent.split('[DEVICE CONTROL CAPABILITY]').first.trim();
+    if (isUser) {
+      if (userDisplayContent.contains('[DEVICE CONTROL CAPABILITY]')) {
+        userDisplayContent = userDisplayContent.split('[DEVICE CONTROL CAPABILITY]').first.trim();
+      }
+      if (userDisplayContent.contains('[PRIVILEGED SHELL CAPABILITY]')) {
+        userDisplayContent = userDisplayContent.split('[PRIVILEGED SHELL CAPABILITY]').first.trim();
+      }
+      if (userDisplayContent.contains('[RECENT LOCAL DEVICE CONTEXT:')) {
+        userDisplayContent = userDisplayContent.split('[RECENT LOCAL DEVICE CONTEXT:').first.trim();
+      }
+      if (userDisplayContent.contains('[INSTRUCTION:')) {
+        userDisplayContent = userDisplayContent.split('[INSTRUCTION:').first.trim();
+      }
+
+      final trimmed = userDisplayContent.trim();
+      final lower = trimmed.toLowerCase();
+      final isSynthetic =
+          trimmed.isEmpty ||
+          lower.startsWith("user approved mobile action") ||
+          lower.startsWith("user declined/rejected the mobile action") ||
+          lower.startsWith("user rejected the execution of mobile action") ||
+          lower.startsWith("user declined the mobile action") ||
+          lower.startsWith("observation from mobile execution:") ||
+          lower.startsWith("you concluded your reasoning in <think>");
+
+      if (isSynthetic) {
+        return const SizedBox.shrink();
+      }
     }
 
     return Padding(
@@ -153,7 +250,7 @@ class ChatBubble extends StatelessWidget {
           children: [
           // Agent label
           if (!isUser && !isTool)
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(left: 6, bottom: 5),
               child: Text(
                 "HERMES",
@@ -196,6 +293,8 @@ class ChatBubble extends StatelessWidget {
                     toolStatus: message.toolStatus ?? (message.isStreaming ? "running" : "completed"),
                     input: message.toolInput,
                     output: message.toolOutput ?? (message.content.isNotEmpty ? message.content : null),
+                    onApprove: onApprove != null ? () => onApprove!(message.id) : null,
+                    onReject: onReject != null ? () => onReject!(message.id) : null,
                   ),
 
                 // Tool calls with message.toolName on assistant messages
@@ -221,9 +320,11 @@ class ChatBubble extends StatelessWidget {
                 // Thinking / Reasoning Block (if present)
                 if (!isUser && parsed != null && parsed.thinkingContent != null && parsed.thinkingContent!.isNotEmpty)
                   _ThinkingBlock(
+                    key: ValueKey('thinking_${message.id}'),
                     content: parsed.thinkingContent!,
                     isStreaming: !parsed.isThinkingComplete && message.isStreaming,
                     isComplete: parsed.isThinkingComplete,
+                    hasResponseStarted: parsed.mainContent.trim().isNotEmpty,
                   ),
 
                 // Main Answer Content
@@ -239,9 +340,9 @@ class ChatBubble extends StatelessWidget {
                       textColor: Colors.white,
                     ),
                   )
-                else if (!isTool && parsed != null && parsed.mainContent.isNotEmpty)
+                else if (!isTool && parsed != null && parsed.mainContent.trim().isNotEmpty)
                   DefaultTextStyle(
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: HermesTokens.fontSizeBody,
                       height: HermesTokens.lineHeightChat,
                       color: HermesTokens.agentBubbleText,
@@ -250,6 +351,15 @@ class ChatBubble extends StatelessWidget {
                       content: parsed.mainContent,
                       textColor: HermesTokens.agentBubbleText,
                     ),
+                  )
+                else if (!isTool &&
+                    !isUser &&
+                    !message.isStreaming &&
+                    message.toolName == null &&
+                    (parsed == null || (parsed.mainContent.trim().isEmpty && parsed.toolCalls.isEmpty)))
+                  _EmptyResponseNotice(
+                    hasThinking: parsed?.thinkingContent != null && parsed!.thinkingContent!.trim().isNotEmpty,
+                    onContinue: onContinue != null ? () => onContinue!(message.id) : null,
                   ),
 
                 // Streaming indicator
@@ -261,7 +371,7 @@ class ChatBubble extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const SizedBox(
+                        SizedBox(
                           width: 12,
                           height: 12,
                           child: CircularProgressIndicator(
@@ -274,7 +384,7 @@ class ChatBubble extends StatelessWidget {
                           (parsed == null || (parsed.mainContent.isEmpty && (parsed.thinkingContent == null || parsed.thinkingContent!.isEmpty)))
                               ? "Thinking & preparing response..."
                               : "Responding...",
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
                             color: HermesTokens.accent,
                             fontWeight: FontWeight.w600,
@@ -292,7 +402,7 @@ class ChatBubble extends StatelessWidget {
             padding: const EdgeInsets.only(top: 4, left: 4, right: 4),
             child: Text(
               _formatTime(message.timestamp),
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: HermesTokens.fontSizeTime,
                 color: HermesTokens.textMuted,
               ),
@@ -310,11 +420,14 @@ class _ThinkingBlock extends StatefulWidget {
   final String content;
   final bool isStreaming;
   final bool isComplete;
+  final bool hasResponseStarted;
 
   const _ThinkingBlock({
+    super.key,
     required this.content,
     required this.isStreaming,
     required this.isComplete,
+    this.hasResponseStarted = false,
   });
 
   @override
@@ -326,7 +439,25 @@ class _ThinkingBlockState extends State<_ThinkingBlock> {
 
   // While model is actively thinking in stream, keep open.
   // As soon as thinking finishes and response starts, auto-collapse so UI stays clean!
-  bool get expanded => _isExpanded ?? (widget.isStreaming && !widget.isComplete);
+  bool get expanded {
+    if (_isExpanded != null) return _isExpanded!;
+    if (widget.hasResponseStarted || widget.isComplete) return false;
+    return widget.isStreaming;
+  }
+
+  @override
+  void didUpdateWidget(covariant _ThinkingBlock oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // When thinking completes or response begins streaming, auto-collapse cleanly
+    if ((!oldWidget.isComplete && widget.isComplete) ||
+        (!oldWidget.hasResponseStarted && widget.hasResponseStarted)) {
+      if (_isExpanded != false) {
+        setState(() {
+          _isExpanded = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -365,6 +496,40 @@ class _ThinkingBlockState extends State<_ThinkingBlock> {
                       ),
                     ),
                   ),
+                  if (expanded && widget.content.length > 250) ...[
+                    InkWell(
+                      onTap: () => _openFullScreenViewer(
+                        context,
+                        title: "Thought Process",
+                        content: widget.content,
+                        badge: "THINKING",
+                      ),
+                      borderRadius: BorderRadius.circular(4),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.fullscreen_rounded,
+                              size: 15,
+                              color: HermesTokens.accent,
+                            ),
+                            const SizedBox(width: 2),
+                            Text(
+                              "Expand",
+                              style: TextStyle(
+                                fontSize: 10,
+                                fontWeight: FontWeight.w600,
+                                color: HermesTokens.accent,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                  ],
                   Icon(
                     expanded ? Icons.keyboard_arrow_up : Icons.keyboard_arrow_down,
                     size: 16,
@@ -374,20 +539,136 @@ class _ThinkingBlockState extends State<_ThinkingBlock> {
               ),
             ),
           ),
-          if (expanded) ...[
-            const Divider(height: 1, color: HermesTokens.border),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
-              child: DefaultTextStyle(
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.5,
-                  color: HermesTokens.textSecondary,
-                  fontStyle: FontStyle.italic,
+          AnimatedSize(
+            duration: const Duration(milliseconds: 250),
+            curve: Curves.easeInOut,
+            child: expanded
+                ? Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Divider(height: 1, color: HermesTokens.border),
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxHeight: 280),
+                        child: Scrollbar(
+                          child: SingleChildScrollView(
+                            scrollDirection: Axis.vertical,
+                            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+                            child: DefaultTextStyle(
+                              style: TextStyle(
+                                fontSize: 12,
+                                height: 1.5,
+                                color: HermesTokens.textSecondary,
+                                fontStyle: FontStyle.italic,
+                              ),
+                              child: MarkdownBodyWidget(
+                                content: widget.content,
+                                textColor: HermesTokens.textSecondary,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      InkWell(
+                        onTap: () => setState(() => _isExpanded = false),
+                        borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                        child: Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            border: Border(top: BorderSide(color: HermesTokens.borderBright, width: 0.8)),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.keyboard_arrow_up_rounded, size: 15, color: HermesTokens.textMuted),
+                              const SizedBox(width: 4),
+                              Text(
+                                "Minimize",
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: HermesTokens.textMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  )
+                : const SizedBox.shrink(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+
+class _EmptyResponseNotice extends StatelessWidget {
+  final bool hasThinking;
+  final VoidCallback? onContinue;
+
+  const _EmptyResponseNotice({
+    required this.hasThinking,
+    this.onContinue,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: HermesTokens.bgTertiary.withValues(alpha: 0.4),
+        borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+        border: Border.all(color: HermesTokens.borderBright, width: 0.8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            hasThinking
+                ? 'Model menyelesaikan penalaran tanpa mengeluarkan tindakan atau jawaban teks.'
+                : 'Respons model kosong.',
+            style: TextStyle(
+              fontSize: 12,
+              color: HermesTokens.textMuted,
+              height: 1.4,
+            ),
+          ),
+          if (onContinue != null) ...[
+            const SizedBox(height: 8),
+            InkWell(
+              onTap: onContinue,
+              borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: HermesTokens.cardBg,
+                  borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                  border: Border.all(color: HermesTokens.border),
                 ),
-                child: MarkdownBodyWidget(
-                  content: widget.content,
-                  textColor: HermesTokens.textSecondary,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.play_arrow_rounded,
+                      size: 14,
+                      color: HermesTokens.accent,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Lanjutkan Respons',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: HermesTokens.accent,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -434,7 +715,7 @@ class _RunningDotsState extends State<_RunningDots> with SingleTickerProviderSta
   Widget build(BuildContext context) {
     return Text(
       "Running${'.' * _dots}",
-      style: const TextStyle(
+      style: TextStyle(
         fontSize: 11,
         color: HermesTokens.textMuted,
         fontWeight: FontWeight.w500,
@@ -449,12 +730,17 @@ class _ToolCallAccordion extends StatefulWidget {
   final String? toolStatus;
   final String? input;
   final String? output;
+  final VoidCallback? onApprove;
+  final VoidCallback? onReject;
 
   const _ToolCallAccordion({
     required this.toolName,
     this.toolStatus,
     this.input,
     this.output,
+    this.onApprove,
+    this.onReject,
+
   });
 
   @override
@@ -497,6 +783,9 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
 
   IconData _iconForTool(String name) {
     final lower = name.toLowerCase();
+    if (lower.contains('adb_shell') || lower.contains('shizuku_shell')) {
+      return Icons.terminal_rounded;
+    }
     if (lower.contains('mobile') ||
         lower.contains('device') ||
         lower.contains('phone') ||
@@ -533,6 +822,26 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
 
   Widget _buildStatusText() {
     final status = (widget.toolStatus ?? 'completed').toLowerCase();
+    if (status.contains('pending')) {
+      return const Text(
+        "Perlu Izin",
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: HermesTokens.warning,
+        ),
+      );
+    }
+    if (status.contains('reject')) {
+      return Text(
+        "Ditolak",
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w500,
+          color: HermesTokens.textMuted,
+        ),
+      );
+    }
     if (status.contains('run')) {
       return const _RunningDots();
     }
@@ -546,7 +855,7 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
         ),
       );
     }
-    return const Text(
+    return Text(
       "Completed",
       style: TextStyle(
         fontSize: 11,
@@ -571,6 +880,74 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Action Approval Section for Sensitive Tools
+          if (widget.toolStatus == 'pending_approval')
+            Container(
+              margin: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: HermesTokens.warning.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                border: Border.all(color: HermesTokens.warning.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    "This action requires permission to execute:",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: HermesTokens.textPrimary,
+                    ),
+                  ),
+                  if (widget.output != null && widget.output!.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    SelectableText(
+                      widget.output!,
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontFamily: widget.toolName.toLowerCase().contains('shell') ? 'monospace' : null,
+                        color: HermesTokens.textSecondary,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 10),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: HermesTokens.textMuted,
+                          side: BorderSide(color: HermesTokens.border),
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                        onPressed: widget.onReject,
+                        child: const Text("Tolak", style: TextStyle(fontSize: 12)),
+                      ),
+                      const SizedBox(width: 8),
+                      ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: HermesTokens.accent,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                          minimumSize: Size.zero,
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          elevation: 0,
+                        ),
+                        onPressed: widget.onApprove,
+                        child: const Text("Izinkan", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600)),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+
           // Header Row (Clickable)
           InkWell(
             onTap: hasDetails ? () => setState(() => _expanded = !_expanded) : null,
@@ -588,7 +965,7 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
                   Expanded(
                     child: Text(
                       widget.toolName,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontFamily: 'monospace',
                         fontSize: 11,
                         fontWeight: FontWeight.w600,
@@ -615,79 +992,463 @@ class _ToolCallAccordionState extends State<_ToolCallAccordion> {
 
           // Collapsible Details (Input & Output)
           if (_expanded && hasDetails) ...[
-            const Divider(height: 1, color: HermesTokens.border),
+            Divider(height: 1, color: HermesTokens.border),
             Padding(
               padding: const EdgeInsets.all(10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (widget.input != null && widget.input!.isNotEmpty) ...[
-                    const Text(
-                      "INPUT",
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: HermesTokens.textMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: HermesTokens.codeBg,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: HermesTokens.border),
-                      ),
-                      child: SelectableText(
-                        _formatInputDisplay(widget.input!),
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 11,
-                          color: HermesTokens.textPrimary,
-                        ),
-                      ),
+                    Builder(
+                      builder: (ctx) {
+                        final formattedInput = _formatInputDisplay(widget.input!);
+                        final inputLines = formattedInput.split('\n');
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  "INPUT",
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.8,
+                                    color: HermesTokens.textMuted,
+                                  ),
+                                ),
+                                if (inputLines.length > 1) ...[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    "(${inputLines.length} lines)",
+                                    style: TextStyle(
+                                      fontSize: 9,
+                                      color: HermesTokens.textMuted,
+                                    ),
+                                  ),
+                                ],
+                                const Spacer(),
+                                InkWell(
+                                  onTap: () {
+                                    Clipboard.setData(ClipboardData(text: formattedInput));
+                                    HapticFeedback.lightImpact();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text("Tool input copied"),
+                                        duration: Duration(milliseconds: 900),
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                  },
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.copy_rounded, size: 11, color: HermesTokens.textMuted),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          "Copy",
+                                          style: TextStyle(fontSize: 10, color: HermesTokens.textMuted),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                if (inputLines.length > 6 || formattedInput.length > 250) ...[
+                                  const SizedBox(width: 8),
+                                  InkWell(
+                                    onTap: () => _openFullScreenViewer(
+                                      context,
+                                      title: "${widget.toolName} Input",
+                                      content: formattedInput,
+                                      badge: "INPUT",
+                                    ),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.fullscreen_rounded, size: 14, color: HermesTokens.accent),
+                                          const SizedBox(width: 2),
+                                          Text(
+                                            "Expand",
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w600,
+                                              color: HermesTokens.accent,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Container(
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: HermesTokens.codeBg,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: HermesTokens.border),
+                              ),
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(maxHeight: 200),
+                                child: Scrollbar(
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.vertical,
+                                    padding: const EdgeInsets.all(8),
+                                    child: SelectableText(
+                                      formattedInput,
+                                      style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 11,
+                                        color: HermesTokens.textPrimary,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ],
                   if (widget.output != null && widget.output!.isNotEmpty) ...[
                     if (widget.input != null && widget.input!.isNotEmpty)
                       const SizedBox(height: 8),
-                    const Text(
-                      "OUTPUT",
-                      style: TextStyle(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.8,
-                        color: HermesTokens.textMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: HermesTokens.codeBg,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: HermesTokens.border),
-                      ),
-                      child: SelectableText(
-                        _formatOutputDisplay(widget.output!),
-                        style: const TextStyle(
-                          fontFamily: 'monospace',
-                          fontSize: 11,
-                          color: HermesTokens.textSecondary,
-                        ),
-                      ),
+                    Builder(
+                      builder: (ctx) {
+                        final formattedOutput = _formatOutputDisplay(widget.output!);
+                        final outputLines = formattedOutput.split('\n');
+                        return Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Text(
+                                  "OUTPUT",
+                                  style: TextStyle(
+                                    fontSize: 9,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 0.8,
+                                    color: HermesTokens.textMuted,
+                                  ),
+                                ),
+                                if (outputLines.length > 1) ...[
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    "(${outputLines.length} lines)",
+                                    style: TextStyle(
+                                      fontSize: 9,
+                                      color: HermesTokens.textMuted,
+                                    ),
+                                  ),
+                                ],
+                                const Spacer(),
+                                InkWell(
+                                  onTap: () {
+                                    Clipboard.setData(ClipboardData(text: formattedOutput));
+                                    HapticFeedback.lightImpact();
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text("Tool output copied"),
+                                        duration: Duration(milliseconds: 900),
+                                        behavior: SnackBarBehavior.floating,
+                                      ),
+                                    );
+                                  },
+                                  borderRadius: BorderRadius.circular(4),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(Icons.copy_rounded, size: 11, color: HermesTokens.textMuted),
+                                        const SizedBox(width: 3),
+                                        Text(
+                                          "Copy",
+                                          style: TextStyle(fontSize: 10, color: HermesTokens.textMuted),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                if (outputLines.length > 6 || formattedOutput.length > 250) ...[
+                                  const SizedBox(width: 8),
+                                  InkWell(
+                                    onTap: () => _openFullScreenViewer(
+                                      context,
+                                      title: "${widget.toolName} Output",
+                                      content: formattedOutput,
+                                      badge: "OUTPUT",
+                                    ),
+                                    borderRadius: BorderRadius.circular(4),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          Icon(Icons.fullscreen_rounded, size: 14, color: HermesTokens.accent),
+                                          const SizedBox(width: 2),
+                                          Text(
+                                            "Expand",
+                                            style: TextStyle(
+                                              fontSize: 10,
+                                              fontWeight: FontWeight.w600,
+                                              color: HermesTokens.accent,
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Container(
+                              width: double.infinity,
+                              decoration: BoxDecoration(
+                                color: HermesTokens.codeBg,
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: HermesTokens.border),
+                              ),
+                              child: ConstrainedBox(
+                                constraints: const BoxConstraints(maxHeight: 280),
+                                child: Scrollbar(
+                                  child: SingleChildScrollView(
+                                    scrollDirection: Axis.vertical,
+                                    padding: const EdgeInsets.all(8),
+                                    child: SelectableText(
+                                      formattedOutput,
+                                      style: TextStyle(
+                                        fontFamily: 'monospace',
+                                        fontSize: 11,
+                                        color: HermesTokens.textSecondary,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
                   ],
+                  const SizedBox(height: 8),
+                  InkWell(
+                    onTap: () => setState(() => _expanded = false),
+                    borderRadius: BorderRadius.circular(6),
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: HermesTokens.bgTertiary.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: HermesTokens.borderBright, width: 0.8),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.keyboard_arrow_up_rounded,
+                            size: 15,
+                            color: HermesTokens.textMuted,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            "Minimize",
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: HermesTokens.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
-            ),
-          ],
+            ),          ],
         ],
       ),
     );
   }
 }
 
+
+
+void _openFullScreenViewer(
+  BuildContext context, {
+  required String title,
+  required String content,
+  String? badge,
+}) {
+  final lines = content.split('\n');
+  showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    backgroundColor: Colors.transparent,
+    builder: (ctx) {
+      return Container(
+        height: MediaQuery.of(context).size.height * 0.90,
+        decoration: const BoxDecoration(
+          color: Color(0xFF1E222B),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        ),
+        child: Column(
+          children: [
+            Center(
+              child: Container(
+                margin: const EdgeInsets.only(top: 8, bottom: 4),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: const Color(0x33FFFFFF),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(16, 10, 16, 12),
+              decoration: const BoxDecoration(
+                color: Color(0xFF181B22),
+              ),
+              child: Row(
+                children: [
+                  if (badge != null) ...[
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF282C34),
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: const Color(0x33FFFFFF)),
+                      ),
+                      child: Text(
+                        badge,
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w700,
+                          color: const Color(0xFF61AFEF),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.white,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Text(
+                    "${lines.length} lines",
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 11,
+                      color: const Color(0xFFABB2BF),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  InkWell(
+                    onTap: () {
+                      Clipboard.setData(ClipboardData(text: content));
+                      HapticFeedback.lightImpact();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text("Copied to clipboard"),
+                          duration: Duration(milliseconds: 900),
+                          behavior: SnackBarBehavior.floating,
+                        ),
+                      );
+                    },
+                    borderRadius: BorderRadius.circular(8),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF282C34),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.copy_rounded, size: 13, color: Colors.white),
+                          SizedBox(width: 4),
+                          Text(
+                            "Copy",
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded, color: Color(0xFFABB2BF), size: 20),
+                    onPressed: () => Navigator.pop(ctx),
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.vertical,
+                padding: const EdgeInsets.all(16),
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: List.generate(lines.length, (i) {
+                          return Padding(
+                            padding: const EdgeInsets.only(right: 14),
+                            child: Text(
+                              "${i + 1}",
+                              style: GoogleFonts.jetBrainsMono(
+                                fontSize: 12,
+                                height: 1.5,
+                                color: const Color(0xFF4B5263),
+                              ),
+                            ),
+                          );
+                        }),
+                      ),
+                      SelectableText(
+                        content,
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 12,
+                          height: 1.5,
+                          color: const Color(0xFFABB2BF),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}

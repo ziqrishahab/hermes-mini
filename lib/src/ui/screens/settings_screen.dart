@@ -2,11 +2,12 @@ import "package:flutter/material.dart";
 import "package:flutter/services.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:go_router/go_router.dart";
-import "../../models/connection_config.dart";
 import "../../providers/connection_provider.dart";
+import "../../providers/theme_provider.dart";
+import "../../services/accessibility_service.dart";
+import "../../services/shell_executor_service.dart";
 import "../../theme.dart";
 import "package:shared_preferences/shared_preferences.dart";
-import "../widgets/fluid_pulse_indicator.dart";
 import "../widgets/hermes_toast.dart";
 import "../widgets/tactile_feedback.dart";
 
@@ -55,14 +56,46 @@ class SettingsScreen extends ConsumerStatefulWidget {
   ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
 }
 
-class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+class _SettingsScreenState extends ConsumerState<SettingsScreen>
+    with WidgetsBindingObserver {
   bool _cronNotify = true;
   bool _agentNotify = true;
+  bool _isAccessibilityActive = false;
+  ShellPrivilegeStatus _shellStatus = const ShellPrivilegeStatus.inactive();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadNotificationPreferences();
+    _checkAccessibility();
+    _checkShellStatus();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _checkAccessibility();
+      _checkShellStatus();
+    }
+  }
+
+  Future<void> _checkAccessibility() async {
+    final active = await AccessibilityService.isEnabled();
+    if (!mounted) return;
+    setState(() => _isAccessibilityActive = active);
+  }
+
+  Future<void> _checkShellStatus() async {
+    final status = await ShellExecutorService.getStatus();
+    if (!mounted) return;
+    setState(() => _shellStatus = status);
   }
 
   Future<void> _loadNotificationPreferences() async {
@@ -89,6 +122,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(isDarkProvider);
+    final currentThemeMode = ref.watch(themeModeProvider);
     final connState = ref.watch(connectionProvider);
     final isConnected = connState.valueOrNull != null;
     final config = ref.watch(connectionConfigProvider);
@@ -104,92 +139,73 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     } else if (config == null) {
       daemonTitle = "Hermes Instance";
       daemonSubtitle = "Not connected";
-    } else if (config.mode == ConnectionMode.remote) {
+    } else {
       final uri = Uri.tryParse(config.apiUrl ?? '');
       final host = (uri != null && uri.host.isNotEmpty)
           ? uri.host
           : (config.apiUrl ?? 'Remote Gateway');
       daemonTitle = host;
       daemonSubtitle = "${config.apiUrl ?? ''} • Remote Gateway";
-    } else {
-      final host = config.sshHost ?? 'localhost';
-      final port = config.remoteHermesPort ?? 8642;
-      daemonTitle = "$host:$port";
-      daemonSubtitle = "${config.sshUsername ?? 'user'}@$host • SSH Tunnel";
     }
 
-    return Scaffold(
-      backgroundColor: HermesTokens.bgPrimary,
-      appBar: AppBar(
-        backgroundColor: HermesTokens.bgPrimary,
-        elevation: 0,
-        centerTitle: true,
-        title: const Text(
-          "Settings",
-          style: TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w700,
-            color: HermesTokens.textPrimary,
+    final isDark = ref.watch(isDarkProvider);
+    final bgColor = isDark ? HermesColors.dark.bgPrimary : HermesColors.light.bgPrimary;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.fastOutSlowIn,
+      color: bgColor,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: true,
+          systemOverlayStyle: SystemUiOverlayStyle(
+            statusBarColor: Colors.transparent,
+            statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+            statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+          ),
+          title: Text(
+            "Settings",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.w700,
+              color: HermesTokens.textPrimary,
+            ),
           ),
         ),
-      ),
       body: SafeArea(
         child: SingleChildScrollView(
+          key: const PageStorageKey('settings_scroll_view'),
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // 1. AGENT PERSONA (Soul, Memory, User)
-              _sectionLabel("AGENT PERSONA"),
+              // 1. AGENTS & MODELS
+              _sectionLabel("AGENTS & MODELS"),
               const SizedBox(height: 8),
-              Container(
-                decoration: NeumorphicDecoration.raised(radius: 18),
-                child: Column(
-                  children: [
-                    _navRow(
-                      title: "Soul Configuration",
-                      subtitle: "Personality, tone & system directives (SOUL.md)",
-                      enabled: isConnected,
-                      onTap: () => context.push("/soul-editor"),
-                    ),
-                    const Divider(height: 1, color: HermesTokens.divider),
-                    _navRow(
-                      title: "Agent Memory",
-                      subtitle: "Long-term persistent facts & notes (MEMORY.md)",
-                      enabled: isConnected,
-                      onTap: () => context.push("/memory-editor"),
-                    ),
-                    const Divider(height: 1, color: HermesTokens.divider),
-                    _navRow(
-                      title: "User Profile",
-                      subtitle: "Operator context, identity & instructions (USER.md)",
-                      enabled: isConnected,
-                      onTap: () => context.push("/user-editor"),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 22),
-
-              // 2. MODEL CONFIGURATION (LLM, Base URL, API Key)
-              _sectionLabel("MODEL CONFIGURATION"),
-              const SizedBox(height: 8),
-              Container(
-                decoration: NeumorphicDecoration.raised(radius: 18),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.fastOutSlowIn,
+                decoration: NeumorphicDecoration.raised(radius: 18, isDark: isDark),
                 child: _navRow(
-                  title: "Model & Inference",
-                  subtitle: "LLM provider, custom base URL & API keys",
+                  title: "Agent Profiles & Models",
+                  subtitle: "Manage personas, soul, memory, LLM providers & API keys",
                   enabled: isConnected,
-                  onTap: () => context.push("/model-config"),
+                  onTap: () => context.push("/agent-profiles"),
                 ),
               ),
               const SizedBox(height: 22),
 
-              // 3. CAPABILITIES & TOOLS (Skills, MCP, Plugins)
+              // 2. CAPABILITIES & TOOLS (Skills, MCP, Plugins)
               _sectionLabel("CAPABILITIES"),
               const SizedBox(height: 8),
-              Container(
-                decoration: NeumorphicDecoration.raised(radius: 18),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.fastOutSlowIn,
+                decoration: NeumorphicDecoration.raised(radius: 18, isDark: isDark),
                 child: _navRow(
                   title: "Capabilities & Tools",
                   subtitle: "Skills, MCP servers, and active extensions",
@@ -212,7 +228,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                     );
                   },
                   borderRadius: BorderRadius.circular(8),
-                  child: const Padding(
+                  child: Padding(
                     padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
@@ -235,7 +251,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 trailing: InkWell(
                   onTap: () => ref.invalidate(gatewaysProvider),
                   borderRadius: BorderRadius.circular(6),
-                  child: const Padding(
+                  child: Padding(
                     padding: EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                     child: Text("Refresh", style: TextStyle(fontSize: 10, color: HermesTokens.textMuted)),
                   ),
@@ -248,28 +264,19 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               // 4. HERMES INSTANCE (Clean, Minimalist, Dynamic, Editable)
               _sectionLabel("HERMES INSTANCE"),
               const SizedBox(height: 8),
-              Container(
-                decoration: NeumorphicDecoration.raised(radius: 18),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.fastOutSlowIn,
+                decoration: NeumorphicDecoration.raised(radius: 18, isDark: isDark),
                 child: _navRow(
                   title: daemonTitle,
                   subtitle: daemonSubtitle,
                   enabled: true,
                   onTap: () => context.push('/hermes-instance'),
-                  trailing: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      FluidPulseIndicator(
-                        color: isConnected ? HermesTokens.success : HermesTokens.error,
-                        size: 6,
-                        animate: isConnected,
-                      ),
-                      const SizedBox(width: 8),
-                      const Icon(
-                        Icons.chevron_right,
-                        size: 16,
-                        color: HermesTokens.textMuted,
-                      ),
-                    ],
+                  trailing: Icon(
+                    Icons.chevron_right,
+                    size: 16,
+                    color: HermesTokens.textMuted,
                   ),
                 ),
               ),
@@ -278,16 +285,27 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               // PREFERENCES
               _sectionLabel("PREFERENCES"),
               const SizedBox(height: 8),
-              Container(
-                decoration: NeumorphicDecoration.raised(radius: 18),
+              AnimatedContainer(
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.fastOutSlowIn,
+                decoration: NeumorphicDecoration.raised(radius: 18, isDark: isDark),
                 child: Column(
                   children: [
+                    // Theme Mode Selector
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                      child: _buildThemeSelector(
+                        currentMode: currentThemeMode,
+                        isDark: isDark,
+                      ),
+                    ),
+                    Divider(height: 1, color: HermesTokens.divider),
                     // Option 1: Scheduled Tasks (Cron)
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                       child: Row(
                         children: [
-                          const Expanded(
+                          Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -312,20 +330,20 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             activeThumbColor: Colors.white,
                             activeTrackColor: HermesTokens.accent,
                             inactiveThumbColor: Colors.white,
-                            inactiveTrackColor: const Color(0xFFCAD4E0),
-                            trackOutlineColor: WidgetStateProperty.all(const Color(0x1F94A3B8)),
+                            inactiveTrackColor: isDark ? const Color(0xFF2D3748) : const Color(0xFFCAD4E0),
+                            trackOutlineColor: WidgetStateProperty.all(isDark ? const Color(0x26FFFFFF) : const Color(0x1F94A3B8)),
                             onChanged: _setCronNotify,
                           ),
                         ],
                       ),
                     ),
-                    const Divider(height: 1, color: HermesTokens.divider),
+                    Divider(height: 1, color: HermesTokens.divider),
                     // Option 2: Agent Task Completion
                     Padding(
                       padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                       child: Row(
                         children: [
-                          const Expanded(
+                          Expanded(
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
@@ -350,9 +368,134 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             activeThumbColor: Colors.white,
                             activeTrackColor: HermesTokens.accent,
                             inactiveThumbColor: Colors.white,
-                            inactiveTrackColor: const Color(0xFFCAD4E0),
-                            trackOutlineColor: WidgetStateProperty.all(const Color(0x1F94A3B8)),
+                            inactiveTrackColor: isDark ? const Color(0xFF2D3748) : const Color(0xFFCAD4E0),
+                            trackOutlineColor: WidgetStateProperty.all(isDark ? const Color(0x26FFFFFF) : const Color(0x1F94A3B8)),
                             onChanged: _setAgentNotify,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: HermesTokens.divider),
+                    // Device Automation (Accessibility Service)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  "Device Automation",
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: HermesTokens.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _isAccessibilityActive
+                                      ? "Hermes Accessibility Service active"
+                                      : "Enable service to permit autonomous mobile gestures",
+                                  style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                                ),
+                              ],
+                            ),
+                          ),
+                          TactileContainer(
+                            onTap: () async {
+                              HapticFeedback.selectionClick();
+                              await AccessibilityService.openSettings();
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: NeumorphicDecoration.raised(
+                                radius: 8,
+                                distance: 1.5,
+                                blur: 3,
+                                isDark: isDark,
+                              ),
+                              child: Text(
+                                _isAccessibilityActive ? "Settings" : "Enable",
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: _isAccessibilityActive ? HermesTokens.textSecondary : HermesTokens.accent,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Divider(height: 1, color: HermesTokens.divider),
+                    // System Shell Bridge (Shizuku Next)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  "System Shell Bridge",
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: HermesTokens.textPrimary,
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  _shellStatus.authorized
+                                      ? _shellStatus.modeLabel
+                                      : (_shellStatus.running
+                                          ? "Service running, tap Authorize to grant shell access"
+                                          : "Connect Shizuku Next for ADB shell tasks"),
+                                  style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                                ),
+                              ],
+                            ),
+                          ),
+                          TactileContainer(
+                            onTap: () async {
+                              HapticFeedback.selectionClick();
+                              if (_shellStatus.running && !_shellStatus.authorized) {
+                                final perm = await ShellExecutorService.requestPermission();
+                                await _checkShellStatus();
+                                if (!context.mounted) return;
+                                HermesToast.show(
+                                  context,
+                                  message: perm.message,
+                                  type: perm.granted ? HermesToastType.success : HermesToastType.error,
+                                );
+                              } else {
+                                _showShellBridgeDialog();
+                              }
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                              decoration: NeumorphicDecoration.raised(
+                                radius: 8,
+                                distance: 1.5,
+                                blur: 3,
+                                isDark: isDark,
+                              ),
+                              child: Text(
+                                _shellStatus.authorized
+                                    ? "Details"
+                                    : (_shellStatus.running ? "Authorize" : "Setup"),
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                  color: _shellStatus.authorized
+                                      ? HermesTokens.textSecondary
+                                      : HermesTokens.accent,
+                                ),
+                              ),
+                            ),
                           ),
                         ],
                       ),
@@ -365,8 +508,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               // DISCONNECT SESSION
               TactileContainer(
                 onTap: _showDisconnectDialog,
-                child: Container(
-                  decoration: NeumorphicDecoration.raised(radius: 14),
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.fastOutSlowIn,
+                  decoration: NeumorphicDecoration.raised(radius: 14, isDark: isDark),
                   child: const Padding(
                     padding: EdgeInsets.symmetric(horizontal: 16, vertical: 13),
                     child: Center(
@@ -389,6 +534,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ),
       ),
+      ),
     );
   }
 
@@ -397,7 +543,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     return Center(
       child: Text(
         "Hermes Mobile v$version",
-        style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+        style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
       ),
     );
   }
@@ -407,22 +553,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFFE0E5EC),
+        backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
         ),
-        title: const Text(
+        title: Text(
           "Disconnect Session?",
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
-        content: const Text(
+        content: Text(
           "You will need to re-authenticate or re-enter Gateway URL to connect again.",
           style: TextStyle(fontSize: 13, color: HermesTokens.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
@@ -439,8 +585,96 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     if (ok == true && mounted) {
       await ref.read(connectionProvider.notifier).disconnect();
-      if (mounted) context.go("/connect");
+      ref.read(isOfflineModeProvider.notifier).state = true;
+      if (mounted) context.push("/hermes-instance");
     }
+  }
+
+  Future<void> _showShellBridgeDialog() async {
+    await _checkShellStatus();
+    if (!mounted) return;
+    final status = _shellStatus;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: HermesTokens.bgElevated,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+        ),
+        title: Text(
+          "System Shell Bridge",
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: HermesTokens.textPrimary,
+          ),
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Status: ${status.modeLabel}",
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: status.authorized ? HermesTokens.accent : HermesTokens.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              "Allows your remote Hermes daemon to run approved Android shell commands on this device:",
+              style: TextStyle(fontSize: 12, color: HermesTokens.textSecondary),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "1. Shizuku Next: Enable Wireless Debugging in Developer Options, pair once, and start the service.\n"
+              "2. After a reboot, start the Shizuku Next service again (not needed on rooted devices).\n"
+              "3. Every shell command requested by Hermes requires manual confirmation before running.",
+              style: TextStyle(fontSize: 11.5, height: 1.45, color: HermesTokens.textMuted),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text("Close", style: TextStyle(color: HermesTokens.textMuted)),
+          ),
+          if (status.running && !status.authorized)
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                final perm = await ShellExecutorService.requestPermission();
+                await _checkShellStatus();
+                if (!mounted) return;
+                HermesToast.show(
+                  context,
+                  message: perm.message,
+                  type: perm.granted ? HermesToastType.success : HermesToastType.error,
+                );
+              },
+              style: FilledButton.styleFrom(
+                backgroundColor: HermesTokens.accent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text("Authorize"),
+            )
+          else if (status.installedBackend != 'none')
+            FilledButton(
+              onPressed: () async {
+                Navigator.pop(ctx);
+                await ShellExecutorService.openManagerApp();
+              },
+              style: FilledButton.styleFrom(
+                backgroundColor: HermesTokens.accent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: const Text("Open Manager"),
+            ),
+        ],
+      ),
+    );
   }
 
   Widget _sectionLabel(String t, {Widget? trailing}) => Padding(
@@ -449,7 +683,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       children: [
         Text(
           t,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w600,
             color: HermesTokens.textMuted,
@@ -488,8 +722,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     );
     final bool isAchievementsActive = isConnected && achievementsPlugin != null;
 
-    return Container(
-      decoration: NeumorphicDecoration.raised(radius: 18),
+    final isDark = ref.watch(isDarkProvider);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.fastOutSlowIn,
+      decoration: NeumorphicDecoration.raised(radius: 18, isDark: isDark),
       child: Column(
         children: [
           // 1. Kanban
@@ -500,7 +737,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 : "Not installed on Hermes host • Inactive",
             enabled: isKanbanActive,
             trailing: isLoading
-                ? const SizedBox(
+                ? SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
@@ -512,13 +749,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               } else {
                 _showInactivePluginDialog(
                   title: "Kanban",
+                  pluginCatalogName: "kanban",
                   cliCommand: "hermes plugins install kanban",
                   description: "Multi-agent task collaboration board with customizable columns and background execution.",
                 );
               }
             },
           ),
-          const Divider(height: 1, color: HermesTokens.divider),
+          Divider(height: 1, color: HermesTokens.divider),
           // 2. Achievements
           _navRow(
             title: "Achievements",
@@ -527,7 +765,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 : "Not installed on Hermes host • Inactive",
             enabled: isAchievementsActive,
             trailing: isLoading
-                ? const SizedBox(
+                ? SizedBox(
                     width: 16,
                     height: 16,
                     child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
@@ -539,6 +777,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               } else {
                 _showInactivePluginDialog(
                   title: "Achievements",
+                  pluginCatalogName: "hermes-achievements",
                   cliCommand: "hermes plugins install hermes-achievements",
                   description: "Steam-style achievements, session milestones, and badges for agentic Hermes workflows.",
                 );
@@ -573,8 +812,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     final bool discordConfigured = discordData['configured'] == true;
     final bool whatsappConfigured = whatsappData['configured'] == true;
 
-    return Container(
-      decoration: NeumorphicDecoration.raised(radius: 18),
+    final isDark = ref.watch(isDarkProvider);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.fastOutSlowIn,
+      decoration: NeumorphicDecoration.raised(radius: 18, isDark: isDark),
       child: Column(
         children: [
           // 1. Telegram
@@ -588,7 +830,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             enabled: isConnected,
             onTap: () => context.push('/gateway/telegram', extra: telegramData),
           ),
-          const Divider(height: 1, color: HermesTokens.divider),
+          Divider(height: 1, color: HermesTokens.divider),
           // 2. Discord
           _navRow(
             title: "Discord Bot",
@@ -600,7 +842,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             enabled: isConnected,
             onTap: () => context.push('/gateway/discord', extra: discordData),
           ),
-          const Divider(height: 1, color: HermesTokens.divider),
+          Divider(height: 1, color: HermesTokens.divider),
           // 3. WhatsApp
           _navRow(
             title: "WhatsApp Bridge",
@@ -619,94 +861,135 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _showInactivePluginDialog({
     required String title,
+    required String pluginCatalogName,
     required String cliCommand,
     required String description,
   }) {
+    bool isInstalling = false;
+
     showDialog<void>(
       context: context,
       barrierColor: Colors.black.withValues(alpha: 0.6),
-      builder: (ctx) => AlertDialog(
-        backgroundColor: const Color(0xFFE0E5EC),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: Row(
-          children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: NeumorphicDecoration.recessed(radius: 10),
-              child: const Icon(Icons.info_outline_rounded, color: HermesTokens.textSecondary, size: 20),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                "$title Inactive",
-                style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          backgroundColor: HermesTokens.bgElevated,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: NeumorphicDecoration.recessed(radius: 10),
+                child: Icon(Icons.extension_outlined, color: HermesTokens.accent, size: 20),
               ),
-            ),
-          ],
-        ),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              "This plugin is not installed or currently disabled on your connected Hermes daemon.",
-              style: TextStyle(fontSize: 13, color: HermesTokens.textSecondary, height: 1.4),
-            ),
-            const SizedBox(height: 12),
-            Text(
-              description,
-              style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              "Install command for host:",
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textMuted),
-            ),
-            const SizedBox(height: 6),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: NeumorphicDecoration.recessed(radius: 10),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      cliCommand,
-                      style: const TextStyle(
-                        fontFamily: 'JetBrains Mono',
-                        fontSize: 11,
-                        color: HermesTokens.accentText,
-                        fontWeight: FontWeight.w600,
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  "$title Inactive",
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
+                ),
+              ),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "This plugin is not yet installed on your connected Hermes host.",
+                style: TextStyle(fontSize: 13, color: HermesTokens.textSecondary, height: 1.4),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                description,
+                style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+              ),
+              const SizedBox(height: 14),
+              Text(
+                "Manual CLI Command:",
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.textMuted),
+              ),
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: NeumorphicDecoration.recessed(radius: 10),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        cliCommand,
+                        style: TextStyle(
+                          fontFamily: 'JetBrains Mono',
+                          fontSize: 11,
+                          color: HermesTokens.accentText,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                     ),
-                  ),
-                  InkWell(
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: cliCommand));
-                      Navigator.pop(ctx);
-                      HermesToast.show(
-                        context,
-                        message: "Command copied to clipboard",
-                        type: HermesToastType.info,
-                      );
-                    },
-                    borderRadius: BorderRadius.circular(6),
-                    child: const Padding(
-                      padding: EdgeInsets.all(4),
-                      child: Icon(Icons.copy_rounded, size: 16, color: HermesTokens.accent),
+                    InkWell(
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: cliCommand));
+                        HermesToast.show(
+                          context,
+                          message: "Command copied to clipboard",
+                          type: HermesToastType.info,
+                        );
+                      },
+                      borderRadius: BorderRadius.circular(6),
+                      child: Padding(
+                        padding: const EdgeInsets.all(4),
+                        child: Icon(Icons.copy_rounded, size: 16, color: HermesTokens.accent),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: isInstalling ? null : () => Navigator.pop(ctx),
+              child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            ),
+            FilledButton(
+              onPressed: isInstalling
+                  ? null
+                  : () async {
+                      setDialogState(() => isInstalling = true);
+                      final conn = ref.read(connectionProvider).valueOrNull;
+                      final ok = await conn?.installPlugin(pluginCatalogName) ?? false;
+                      if (ctx.mounted) Navigator.pop(ctx);
+                      if (mounted) {
+                        if (ok) {
+                          ref.invalidate(settingsPluginsProvider);
+                          HermesToast.show(
+                            context,
+                            message: "$title installed successfully on host",
+                            type: HermesToastType.success,
+                          );
+                        } else {
+                          HermesToast.show(
+                            context,
+                            message: "Failed to install $title: ${conn?.lastPluginError ?? 'Host rejected installation'}",
+                            type: HermesToastType.error,
+                          );
+                        }
+                      }
+                    },
+              style: FilledButton.styleFrom(
+                backgroundColor: HermesTokens.accent,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+              ),
+              child: isInstalling
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Text("1-Tap Remote Install"),
             ),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text("Got it", style: TextStyle(color: HermesTokens.textPrimary, fontWeight: FontWeight.w600)),
-          ),
-        ],
       ),
     );
   }
@@ -785,6 +1068,134 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ),
         ),
       ),
+    );
+  }
+  Widget _buildThemeSelector({
+    required ThemeMode currentMode,
+    required bool isDark,
+  }) {
+    final int selectedIndex = switch (currentMode) {
+      ThemeMode.system => 0,
+      ThemeMode.light => 1,
+      ThemeMode.dark => 2,
+    };
+
+    final items = const [
+      (label: "System", icon: Icons.brightness_auto_rounded, mode: ThemeMode.system),
+      (label: "Light", icon: Icons.light_mode_rounded, mode: ThemeMode.light),
+      (label: "Dark", icon: Icons.dark_mode_rounded, mode: ThemeMode.dark),
+    ];
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "Theme Mode",
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: HermesTokens.textPrimary,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          "Select app appearance theme",
+          style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+        ),
+        const SizedBox(height: 10),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            const trackPadding = 4.0;
+            final innerWidth = constraints.maxWidth - (trackPadding * 2);
+            final segmentWidth = innerWidth / items.length;
+            const height = 40.0;
+
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 250),
+              curve: Curves.fastOutSlowIn,
+              height: height,
+              decoration: NeumorphicDecoration.recessed(
+                radius: 12,
+                isDark: isDark,
+              ),
+              padding: const EdgeInsets.all(trackPadding),
+              child: Stack(
+                children: [
+                  // Smoothly sliding indicator pill
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 250),
+                    curve: Curves.fastOutSlowIn,
+                    left: selectedIndex * segmentWidth,
+                    top: 0,
+                    bottom: 0,
+                    width: segmentWidth,
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 250),
+                      curve: Curves.fastOutSlowIn,
+                      decoration: NeumorphicDecoration.switcherThumb(
+                        radius: 8,
+                        isDark: isDark,
+                      ),
+                    ),
+                  ),
+                  // Segment labels & tap targets
+                  Row(
+                    children: List.generate(items.length, (index) {
+                      final item = items[index];
+                      final isSelected = selectedIndex == index;
+
+                      return Expanded(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () {
+                            if (currentMode != item.mode) {
+                              HapticFeedback.selectionClick();
+                              ref.read(themeModeProvider.notifier).setThemeMode(item.mode);
+                            }
+                          },
+                          child: Center(
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                TweenAnimationBuilder<Color?>(
+                                  duration: const Duration(milliseconds: 250),
+                                  curve: Curves.fastOutSlowIn,
+                                  tween: ColorTween(
+                                    end: isSelected ? HermesTokens.accent : HermesTokens.textMuted,
+                                  ),
+                                  builder: (context, color, _) => Icon(
+                                    item.icon,
+                                    size: 14,
+                                    color: color,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                AnimatedDefaultTextStyle(
+                                  duration: const Duration(milliseconds: 250),
+                                  curve: Curves.fastOutSlowIn,
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+                                    color: isSelected
+                                        ? HermesTokens.textPrimary
+                                        : HermesTokens.textMuted,
+                                    letterSpacing: -0.2,
+                                  ),
+                                  child: Text(item.label),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    }),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }

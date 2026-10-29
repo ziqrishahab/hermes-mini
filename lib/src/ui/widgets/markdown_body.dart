@@ -83,7 +83,7 @@ class MarkdownBodyWidget extends StatelessWidget {
               : HermesTokens.accent,
         ),
         blockquoteDecoration: BoxDecoration(
-          border: const Border(left: BorderSide(color: HermesTokens.accent, width: 3)),
+          border: Border(left: BorderSide(color: HermesTokens.accent, width: 3)),
           color: HermesTokens.accentSubtle,
         ),
         listBullet: GoogleFonts.inter(color: effectiveColor),
@@ -148,7 +148,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
               // Language label header with functional copy button
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: HermesTokens.bgTertiary,
                   borderRadius: BorderRadius.vertical(
                     top: Radius.circular(HermesTokens.radiusSm - 1),
@@ -179,7 +179,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
                               ),
                             );
                           },
-                          child: const Row(
+                          child: Row(
                             children: [
                               Icon(
                                 Icons.copy_rounded,
@@ -205,7 +205,7 @@ class CodeElementBuilder extends MarkdownElementBuilder {
                             displayLanguage,
                             language,
                           ),
-                          child: const Row(
+                          child: Row(
                             children: [
                               Icon(
                                 Icons.fullscreen_rounded,
@@ -229,15 +229,26 @@ class CodeElementBuilder extends MarkdownElementBuilder {
                   ],
                 ),
               ),
-              // Code content with dark syntax highlighting
-              HighlightView(
-                code,
-                language: language.isEmpty ? 'plaintext' : language,
-                theme: atomOneDarkTheme,
-                padding: const EdgeInsets.all(12),
-                textStyle: GoogleFonts.jetBrainsMono(
-                  fontSize: HermesTokens.fontSizeCode,
-                  height: 1.5,
+              // Code content with dark syntax highlighting and capped max-height
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 320),
+                child: Scrollbar(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.vertical,
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: HighlightView(
+                        code,
+                        language: language.isEmpty ? 'plaintext' : language,
+                        theme: atomOneDarkTheme,
+                        padding: const EdgeInsets.all(12),
+                        textStyle: GoogleFonts.jetBrainsMono(
+                          fontSize: HermesTokens.fontSizeCode,
+                          height: 1.5,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
               ),
             ],

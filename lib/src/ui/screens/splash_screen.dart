@@ -5,6 +5,8 @@ import "package:go_router/go_router.dart";
 
 import "../../config/dev_config.dart";
 import "../../providers/connection_provider.dart";
+import "../../services/storage_service.dart";
+import "../../providers/theme_provider.dart";
 import "../../theme.dart";
 import "../widgets/hermes_loading_indicator.dart";
 
@@ -79,14 +81,23 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
   }
 
   void _startNavigationTimer() {
-    Future.delayed(const Duration(milliseconds: 2200), () {
+    Future.delayed(const Duration(milliseconds: 2200), () async {
       if (!mounted) return;
 
       final isConnected = ref.read(connectionProvider).valueOrNull != null;
       if (devBypassConnection || isConnected) {
         context.go('/home');
       } else {
-        context.go('/welcome');
+        final hasCompleted = await StorageService().isOnboardingCompleted();
+        if (!mounted) return;
+        if (hasCompleted) {
+          if (!isConnected) {
+            ref.read(isOfflineModeProvider.notifier).state = true;
+          }
+          context.go('/home');
+        } else {
+          context.go('/onboarding');
+        }
       }
     });
   }
@@ -100,13 +111,14 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
 
   @override
   Widget build(BuildContext context) {
+    final isDark = ref.watch(isDarkProvider);
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
+      value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.dark,
-        statusBarBrightness: Brightness.light,
+        statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
         systemNavigationBarColor: HermesTokens.bgPrimary,
-        systemNavigationBarIconBrightness: Brightness.dark,
+        systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
       ),
       child: Scaffold(
         backgroundColor: HermesTokens.bgPrimary,
@@ -127,21 +139,25 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                     return Stack(
                       alignment: Alignment.center,
                       children: [
-                        // Dynamic Aura Glow matching the cyan fairy wing glow
+                        // Dynamic Aura Glow (ambient depth matching theme)
                         Transform.scale(
                           scale: pulseScale,
                           child: Container(
-                            width: 210,
-                            height: 210,
+                            width: 232,
+                            height: 232,
                             decoration: BoxDecoration(
                               shape: BoxShape.circle,
                               gradient: RadialGradient(
-                                colors: [
-                                  const Color(0xFF38BDF8).withValues(alpha: auraOpacity),
-                                  HermesTokens.accent.withValues(alpha: auraOpacity * 0.5),
-                                  Colors.transparent,
-                                ],
-                                stops: const [0.2, 0.6, 1.0],
+                                colors: isDark
+                                    ? [
+                                        Colors.black.withValues(alpha: auraOpacity * 0.35),
+                                        Colors.transparent,
+                                      ]
+                                    : [
+                                        const Color(0xFFCAD4E0).withValues(alpha: auraOpacity * 0.4),
+                                        Colors.transparent,
+                                      ],
+                                stops: const [0.2, 1.0],
                               ),
                             ),
                           ),
@@ -153,20 +169,20 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                           child: ScaleTransition(
                             scale: _logoScale,
                             child: Container(
-                              width: 168,
-                              height: 168,
+                              width: 198,
+                              height: 198,
                               decoration: NeumorphicDecoration.circle(
+                                color: isDark
+                                    ? HermesTokens.charcoalSlate
+                                    : HermesTokens.coolSilver,
                                 distance: 7,
                                 blur: 18,
+                                isDark: isDark,
                               ),
-                              padding: const EdgeInsets.all(18),
+                              padding: const EdgeInsets.all(26),
                               child: Image.asset(
-                                'assets/icons/pixie_transparent.png',
+                                HermesTokens.brandIconSet,
                                 fit: BoxFit.contain,
-                                errorBuilder: (_, _, _) => Image.asset(
-                                  'assets/icons/hermes_logo.png',
-                                  fit: BoxFit.contain,
-                                ),
                               ),
                             ),
                           ),
@@ -184,7 +200,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
                 position: _textSlide,
                 child: FadeTransition(
                   opacity: _textFade,
-                  child: const Column(
+                  child: Column(
                     children: [
                       Text(
                         "M Y P I X I E",
@@ -215,7 +231,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               // Custom Shimmering Liquid Capsule Bar
               FadeTransition(
                 opacity: _indicatorFade,
-                child: const HermesLoadingIndicator(
+                child: HermesLoadingIndicator(
                   width: 130,
                   height: 4.5,
                   statusText: "Initializing MyPixie Engine...",
@@ -229,7 +245,7 @@ class _SplashScreenState extends ConsumerState<SplashScreen>
               // Bottom subtle version info
               FadeTransition(
                 opacity: _indicatorFade,
-                child: const Padding(
+                child: Padding(
                   padding: EdgeInsets.only(bottom: 16),
                   child: Text(
                     "v1.0.0 • MyPixie",

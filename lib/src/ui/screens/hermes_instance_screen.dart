@@ -4,9 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../models/connection_config.dart';
+import '../../models/config_health_item.dart';
 import '../../providers/connection_provider.dart';
 import '../../theme.dart';
-import '../widgets/fluid_pulse_indicator.dart';
 import '../widgets/hermes_toast.dart';
 import '../widgets/tactile_feedback.dart';
 
@@ -30,7 +30,6 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
 
   int? _measuredLatency;
   bool _measuringLatency = false;
-  bool _cleaningCache = false;
 
   Future<void> _pingInstance() async {
     setState(() => _measuringLatency = true);
@@ -52,21 +51,38 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
     }
   }
 
-  Future<void> _cleanCache() async {
-    setState(() => _cleaningCache = true);
+  List<ConfigHealthItem>? _diagnosticsResults;
+  bool _runningDiagnostics = false;
+
+  Future<void> _runDiagnostics() async {
     final conn = ref.read(connectionProvider).valueOrNull;
-    if (conn != null) {
-      try {
-        await conn.clearLocalCache();
-      } catch (_) {}
-    }
-    if (mounted) {
-      setState(() => _cleaningCache = false);
+    if (conn == null) {
       HermesToast.show(
         context,
-        message: 'Storage cache cleaned successfully',
-        type: HermesToastType.info,
+        message: "Instance is not connected",
+        type: HermesToastType.error,
       );
+      return;
+    }
+
+    setState(() => _runningDiagnostics = true);
+    try {
+      final results = await conn.runConfigHealthAudit();
+      if (mounted) {
+        setState(() {
+          _diagnosticsResults = results;
+          _runningDiagnostics = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _runningDiagnostics = false);
+        HermesToast.show(
+          context,
+          message: "Diagnostics check failed: $e",
+          type: HermesToastType.error,
+        );
+      }
     }
   }
 
@@ -88,7 +104,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
   }
 
   Future<bool> _runTest({required bool isSaveAction}) async {
-    final url = _urlCtrl.text.trim();
+    var url = _urlCtrl.text.trim().replaceAll(RegExp(r'\s+'), '');
     final key = _keyCtrl.text.trim();
 
     if (url.isEmpty) {
@@ -105,6 +121,11 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
       });
       return false;
     }
+
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'http://$url';
+    }
+    _urlCtrl.text = url;
 
     setState(() {
       if (isSaveAction) {
@@ -204,7 +225,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
       hostDisplay = (uri != null && uri.host.isNotEmpty)
           ? uri.host
           : (activeConfig.apiUrl ?? 'Remote Gateway');
-      urlDisplay = activeConfig.apiUrl ?? 'http://<host-ip>:9119';
+      urlDisplay = activeConfig.apiUrl ?? 'Not configured';
     }
 
     return Scaffold(
@@ -226,7 +247,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
               ),
               child: IconButton(
                 tooltip: 'Back to settings',
-                icon: const Icon(
+                icon: Icon(
                   Icons.arrow_back_ios_new_rounded,
                   color: HermesTokens.textPrimary,
                   size: 16,
@@ -237,7 +258,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
             ),
           ),
         ),
-        title: const Text(
+        title: Text(
           'Hermes Instance',
           style: TextStyle(
             fontSize: 17,
@@ -259,7 +280,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                 ),
                 child: IconButton(
                   tooltip: 'Connection Setup Guide',
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.help_outline_rounded,
                     color: HermesTokens.accent,
                     size: 20,
@@ -278,60 +299,135 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // 1. Clean Status Overview Card (Text only, no green badge or noisy pills)
+              // 1. Clean Status Overview Card with Latency Ping
               Container(
                 padding: const EdgeInsets.all(18),
                 decoration: NeumorphicDecoration.raised(radius: 18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Row(
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Text(
+                                isConnected ? 'Connected' : 'Disconnected',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: isConnected
+                                      ? HermesTokens.success
+                                      : HermesTokens.error,
+                                ),
+                              ),
+                              Text(
+                                isConnected ? ' • Remote' : ' • Offline',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: HermesTokens.textMuted,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            hostDisplay,
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: HermesTokens.textPrimary,
+                              letterSpacing: -0.3,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          const SizedBox(height: 3),
+                          Text(
+                            urlDisplay,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: HermesTokens.textMuted,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        FluidPulseIndicator(
-                          color: isConnected
-                              ? HermesTokens.success
-                              : HermesTokens.error,
-                          size: 7,
-                          animate: isConnected,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          isConnected ? 'Connected' : 'Disconnected',
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                            color: isConnected
-                                ? HermesTokens.success
-                                : HermesTokens.error,
+                        Container(
+                          width: 88,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          decoration: NeumorphicDecoration.recessed(radius: 10),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.center,
+                            children: [
+                              Text(
+                                'LATENCY',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.w700,
+                                  letterSpacing: 0.5,
+                                  color: HermesTokens.textMuted,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _measuredLatency != null ? '$_measuredLatency ms' : 'Untested',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                  color: _measuredLatency != null
+                                      ? (_measuredLatency! < 150
+                                          ? HermesTokens.success
+                                          : (_measuredLatency! < 400
+                                              ? const Color(0xFFF59E0B)
+                                              : HermesTokens.error))
+                                      : HermesTokens.textPrimary,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        Text(
-                          isConnected ? ' • Remote Gateway' : ' • Offline',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.w500,
-                            color: HermesTokens.textMuted,
+                        const SizedBox(height: 6),
+                        TactileContainer(
+                          onTap: _measuringLatency ? null : _pingInstance,
+                          child: Container(
+                            width: 88,
+                            height: 28,
+                            alignment: Alignment.center,
+                            decoration: NeumorphicDecoration.raised(
+                              radius: 8,
+                              distance: 1.5,
+                              blur: 3,
+                            ),
+                            child: _measuringLatency
+                                ? SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 1.5,
+                                      color: HermesTokens.accent,
+                                    ),
+                                  )
+                                : Text(
+                                    'Test Latency',
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                      color: HermesTokens.textPrimary,
+                                    ),
+                                  ),
                           ),
                         ),
                       ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      hostDisplay,
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w800,
-                        color: HermesTokens.textPrimary,
-                        letterSpacing: -0.3,
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      urlDisplay,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: HermesTokens.textMuted,
-                      ),
                     ),
                   ],
                 ),
@@ -346,7 +442,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'DAEMON CONNECTION PARAMETERS',
                       style: TextStyle(
                         fontSize: 11,
@@ -358,7 +454,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                     const SizedBox(height: 16),
 
                     // Gateway URL
-                    const Text(
+                    Text(
                       'GATEWAY URL',
                       style: TextStyle(
                         fontSize: 11,
@@ -376,26 +472,29 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                       child: TextField(
                         controller: _urlCtrl,
                         keyboardType: TextInputType.url,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
                           color: HermesTokens.textPrimary,
                         ),
                         decoration: InputDecoration(
-                          hintText: 'http://<host-ip>:9119',
-                          hintStyle: const TextStyle(
+                          hintText: 'http://host:port',
+                          hintStyle: TextStyle(
                             fontSize: 12,
                             color: HermesTokens.textMuted,
                           ),
+                          filled: false,
                           border: InputBorder.none,
-                          prefixIcon: const Icon(
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          prefixIcon: Icon(
                             Icons.link_rounded,
                             size: 18,
                             color: HermesTokens.textMuted,
                           ),
                           suffixIcon: _urlCtrl.text.isNotEmpty
                               ? IconButton(
-                                  icon: const Icon(
+                                  icon: Icon(
                                     Icons.clear_rounded,
                                     size: 16,
                                     color: HermesTokens.textMuted,
@@ -415,7 +514,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                     const SizedBox(height: 18),
 
                     // Password / API Key
-                    const Text(
+                    Text(
                       'PASSWORD / API KEY',
                       style: TextStyle(
                         fontSize: 11,
@@ -433,19 +532,23 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                       child: TextField(
                         controller: _keyCtrl,
                         obscureText: _obscureKey,
-                        style: const TextStyle(
+                        keyboardType: TextInputType.visiblePassword,
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
                           color: HermesTokens.textPrimary,
                         ),
                         decoration: InputDecoration(
-                          hintText: 'Password / Api Token',
-                          hintStyle: const TextStyle(
+                          hintText: 'Password or API key',
+                          hintStyle: TextStyle(
                             fontSize: 12,
                             color: HermesTokens.textMuted,
                           ),
+                          filled: false,
                           border: InputBorder.none,
-                          prefixIcon: const Icon(
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          prefixIcon: Icon(
                             Icons.key_outlined,
                             size: 18,
                             color: HermesTokens.textMuted,
@@ -561,7 +664,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                                 blur: 5,
                               ),
                               child: _testing
-                                  ? const SizedBox(
+                                  ? SizedBox(
                                       width: 18,
                                       height: 18,
                                       child: CircularProgressIndicator(
@@ -569,7 +672,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                                         color: HermesTokens.textSecondary,
                                       ),
                                     )
-                                  : const Text(
+                                  : Text(
                                       'Test Connection',
                                       style: TextStyle(
                                         fontSize: 13,
@@ -621,123 +724,11 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                   ],
                 ),
               ),
+
               const SizedBox(height: 18),
 
-              // 3. Maintenance Card (Clean, Minimalist, No badges/emojis)
-              Container(
-                padding: const EdgeInsets.all(20),
-                decoration: NeumorphicDecoration.raised(radius: 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'INSTANCE MAINTENANCE',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
-                        color: HermesTokens.textMuted,
-                      ),
-                    ),
-                    const SizedBox(height: 14),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                            decoration: NeumorphicDecoration.recessed(radius: 12),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text(
-                                  'LATENCY',
-                                  style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w600,
-                                    color: HermesTokens.textMuted,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  _measuredLatency != null ? '$_measuredLatency ms' : 'Untested',
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w700,
-                                    color: HermesTokens.textPrimary,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: TactileContainer(
-                            onTap: _measuringLatency ? null : _pingInstance,
-                            child: Container(
-                              height: 48,
-                              alignment: Alignment.center,
-                              decoration: NeumorphicDecoration.raised(
-                                radius: 12,
-                                distance: 2,
-                                blur: 4,
-                              ),
-                              child: _measuringLatency
-                                  ? const SizedBox(
-                                      width: 14,
-                                      height: 14,
-                                      child: CircularProgressIndicator(
-                                        strokeWidth: 1.5,
-                                        color: HermesTokens.accent,
-                                      ),
-                                    )
-                                  : const Text(
-                                      'Test Latency',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                        color: HermesTokens.textPrimary,
-                                      ),
-                                    ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 12),
-                    TactileContainer(
-                      onTap: _cleaningCache ? null : _cleanCache,
-                      child: Container(
-                        height: 44,
-                        width: double.infinity,
-                        alignment: Alignment.center,
-                        decoration: NeumorphicDecoration.raised(
-                          radius: 12,
-                          distance: 2,
-                          blur: 4,
-                        ),
-                        child: _cleaningCache
-                            ? const SizedBox(
-                                width: 14,
-                                height: 14,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 1.5,
-                                  color: HermesTokens.textMuted,
-                                ),
-                              )
-                            : const Text(
-                                'Clear Storage Cache',
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w600,
-                                  color: HermesTokens.textPrimary,
-                                ),
-                              ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+              // 3. System Diagnostics & Audit Card
+              _buildDiagnosticsSection(isConnected),
 
               const SizedBox(height: 20),
 
@@ -749,7 +740,7 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
                     vertical: 8,
                   ),
                   decoration: NeumorphicDecoration.recessed(radius: 16),
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
@@ -772,6 +763,185 @@ class _HermesInstanceScreenState extends ConsumerState<HermesInstanceScreen> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDiagnosticsSection(bool isConnected) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: NeumorphicDecoration.raised(radius: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'SYSTEM DIAGNOSTICS & AUDIT',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.5,
+                        color: HermesTokens.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Audit inference API keys, gateway state, and MCP health.',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: HermesTokens.textSecondary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              TactileContainer(
+                onTap: (isConnected && !_runningDiagnostics)
+                    ? _runDiagnostics
+                    : null,
+                child: Container(
+                  height: 34,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  alignment: Alignment.center,
+                  decoration: NeumorphicDecoration.raised(
+                    radius: 10,
+                    distance: 2,
+                    blur: 4,
+                  ),
+                  child: _runningDiagnostics
+                      ? SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: HermesTokens.accent,
+                          ),
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.health_and_safety_outlined,
+                              size: 15,
+                              color: isConnected
+                                  ? HermesTokens.accent
+                                  : HermesTokens.textMuted,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              _diagnosticsResults == null ? 'Run Audit' : 'Re-run',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: isConnected
+                                    ? HermesTokens.textPrimary
+                                    : HermesTokens.textMuted,
+                              ),
+                            ),
+                          ],
+                        ),
+                ),
+              ),
+            ],
+          ),
+          if (_diagnosticsResults != null) ...[
+            const SizedBox(height: 16),
+            const Divider(height: 1),
+            const SizedBox(height: 14),
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: _diagnosticsResults!.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 10),
+              itemBuilder: (ctx, i) {
+                final item = _diagnosticsResults![i];
+                final IconData iconData;
+                final Color statusColor;
+
+                switch (item.severity) {
+                  case HealthSeverity.healthy:
+                    iconData = Icons.check_circle_outline_rounded;
+                    statusColor = HermesTokens.success;
+                    break;
+                  case HealthSeverity.warning:
+                    iconData = Icons.warning_amber_rounded;
+                    statusColor = const Color(0xFFF59E0B);
+                    break;
+                  case HealthSeverity.error:
+                    iconData = Icons.error_outline_rounded;
+                    statusColor = HermesTokens.error;
+                    break;
+                }
+
+                return Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: HermesTokens.bgPrimary,
+                    borderRadius: BorderRadius.circular(HermesTokens.radiusSm),
+                    border: Border.all(color: HermesTokens.border),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(iconData, size: 18, color: statusColor),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  item.title,
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                    color: HermesTokens.textPrimary,
+                                  ),
+                                ),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: statusColor.withValues(alpha: 0.12),
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    item.severity.name.toUpperCase(),
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                      color: statusColor,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              item.description,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: HermesTokens.textSecondary,
+                                height: 1.3,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -805,7 +975,7 @@ class _HermesConnectionGuideSheetState
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.85,
       ),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: HermesTokens.bgElevated,
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -830,7 +1000,7 @@ class _HermesConnectionGuideSheetState
             padding: const EdgeInsets.fromLTRB(20, 8, 16, 12),
             child: Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -845,7 +1015,7 @@ class _HermesConnectionGuideSheetState
                       ),
                       SizedBox(height: 2),
                       Text(
-                        'Step-by-step instructions for local and remote gateway access',
+                        'Step-by-step remote setup via Tailscale Mesh VPN or Cloudflare Tunnel',
                         style: TextStyle(
                           fontSize: 11,
                           color: HermesTokens.textMuted,
@@ -855,7 +1025,7 @@ class _HermesConnectionGuideSheetState
                   ),
                 ),
                 IconButton(
-                  icon: const Icon(
+                  icon: Icon(
                     Icons.close_rounded,
                     size: 20,
                     color: HermesTokens.textMuted,
@@ -876,8 +1046,8 @@ class _HermesConnectionGuideSheetState
               decoration: NeumorphicDecoration.recessed(radius: 14),
               child: Row(
                 children: [
-                  _tabItem(0, 'Local (LAN)'),
-                  _tabItem(1, 'Remote Access'),
+                  _tabItem(0, 'Tailscale (VPN)'),
+                  _tabItem(1, 'Cloudflare Tunnel'),
                   _tabItem(2, 'Token / Auth'),
                 ],
               ),
@@ -891,9 +1061,9 @@ class _HermesConnectionGuideSheetState
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(18, 4, 18, 24),
               child: _activeTab == 0
-                  ? _buildLanGuide()
+                  ? _buildTailscaleGuide()
                   : _activeTab == 1
-                  ? _buildRemoteGuide()
+                  ? _buildCloudflareGuide()
                   : _buildAuthGuide(),
             ),
           ),
@@ -912,7 +1082,7 @@ class _HermesConnectionGuideSheetState
           padding: const EdgeInsets.symmetric(vertical: 8),
           alignment: Alignment.center,
           decoration: active
-              ? NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4)
+              ? NeumorphicDecoration.switcherThumb(radius: 10)
               : null,
           child: Text(
             label,
@@ -928,51 +1098,30 @@ class _HermesConnectionGuideSheetState
     );
   }
 
-  Widget _buildLanGuide() {
+  Widget _buildTailscaleGuide() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildSectionCard(
-          title: 'Same Wi-Fi Network',
+          title: 'Tailscale Mesh VPN (Recommended)',
           subtitle:
-              'Recommended for home or office setup where mobile and computer share the same Wi-Fi router.',
+              'Direct encrypted peer-to-peer connection. Works anywhere over 4G/5G without port forwarding or public domain setup.',
           steps: const [
             _GuideStep(
-              title: 'Start Hermes gateway on your computer',
-              details: 'Run this command in your computer terminal:',
-              code: 'hermes gateway --host 0.0.0.0 --port 9119',
-            ),
-            _GuideStep(
-              title: 'Find your computer local IPv4 address',
+              title: 'Install Tailscale on computer and mobile',
               details:
-                  'Windows: run "ipconfig" in Command Prompt (look for IPv4, e.g. 192.168.1.15).\nmacOS / Linux: run "ip a" or "ifconfig".',
+                  'Install Tailscale on both devices and sign in using the same account (Google, GitHub, etc.).',
             ),
             _GuideStep(
-              title: 'Enter the Gateway URL in Hermes Mobile',
-              details: 'Combine your computer IP address with port 9119:',
-              code: 'http://192.168.x.x:9119',
+              title: 'Start Hermes daemon on your computer',
+              details: 'Run Hermes dashboard in your host terminal:',
+              code: 'hermes dashboard --port 9119',
             ),
-          ],
-        ),
-
-        const SizedBox(height: 14),
-
-        _buildSectionCard(
-          title: 'Android Emulator & USB Cable',
-          subtitle:
-              'Direct local testing on a development workstation without requiring Wi-Fi.',
-          steps: const [
             _GuideStep(
-              title: 'Android Studio Emulator',
+              title: 'Connect using the 100.x.y.z Tailscale IP',
               details:
-                  'Android emulators access host services through the loopback router alias:',
-              code: 'http://10.0.2.2:9119',
-            ),
-            _GuideStep(
-              title: 'Physical Phone via USB Debugging',
-              details:
-                  'Forward port 9119 over ADB, then connect using localhost:',
-              code: 'adb reverse tcp:9119 tcp:9119',
+                  'Copy your computer Tailscale IP address from the Tailscale app, and enter:',
+              code: 'http://100.x.y.z:9119',
             ),
           ],
         ),
@@ -980,68 +1129,31 @@ class _HermesConnectionGuideSheetState
     );
   }
 
-  Widget _buildRemoteGuide() {
+  Widget _buildCloudflareGuide() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildSectionCard(
           title: 'Cloudflare Quick Tunnel',
           subtitle:
-              'Free, secure, and instant. Access Hermes anywhere on cellular data without port forwarding.',
+              'Instant public HTTPS tunnel without port forwarding, domain purchase, or router firewall configuration.',
           steps: const [
             _GuideStep(
-              title: 'Install Cloudflared on your computer',
+              title: 'Run Cloudflare tunnel on your computer',
               details:
-                  'Download cloudflared via your package manager (brew, winget, apt) or from Cloudflare.',
-            ),
-            _GuideStep(
-              title: 'Start a free public tunnel',
-              details: 'Run this command to generate an instant HTTPS URL:',
+                  'Run this single command in your host terminal. No account or domain required:',
               code: 'cloudflared tunnel --url http://localhost:9119',
             ),
             _GuideStep(
-              title: 'Copy the HTTPS URL into Hermes Mobile',
+              title: 'Copy the assigned public HTTPS URL',
               details:
-                  'Copy the assigned URL (e.g. https://xxxx.trycloudflare.com) and paste it into the Gateway URL field.',
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 14),
-
-        _buildSectionCard(
-          title: 'Tailscale Mesh VPN',
-          subtitle:
-              'Direct encrypted connection across all your personal devices.',
-          steps: const [
-            _GuideStep(
-              title: 'Install Tailscale on computer and mobile',
-              details: 'Log into the same Tailscale account on both devices.',
+                  'Cloudflared outputs an assigned URL (e.g. https://xxxx.trycloudflare.com).',
+              code: 'https://xxxx.trycloudflare.com',
             ),
             _GuideStep(
-              title: 'Connect using the 100.x.y.z IP',
-              details: 'Copy your computer Tailscale 100.x.y.z IP and enter:',
-              code: 'http://100.x.y.z:9119',
-            ),
-          ],
-        ),
-
-        const SizedBox(height: 14),
-
-        _buildSectionCard(
-          title: 'Public Cloud VPS / Custom Domain',
-          subtitle:
-              'For permanent cloud servers on DigitalOcean, Hetzner, AWS, etc.',
-          steps: const [
-            _GuideStep(
-              title: 'Open firewall port or reverse proxy',
+              title: 'Paste into Gateway URL',
               details:
-                  'Allow port 9119 on cloud firewall, or configure Nginx/Caddy with SSL.',
-            ),
-            _GuideStep(
-              title: 'Enter public domain endpoint',
-              details: 'Connect using your public IP or domain name:',
-              code: 'https://hermes.yourdomain.com',
+                  'Enter this HTTPS URL into the Gateway URL field along with your Hermes password.',
             ),
           ],
         ),
@@ -1087,7 +1199,7 @@ class _HermesConnectionGuideSheetState
             borderRadius: BorderRadius.circular(14),
             border: Border.all(color: HermesTokens.border),
           ),
-          child: const Column(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -1127,7 +1239,7 @@ class _HermesConnectionGuideSheetState
         children: [
           Text(
             title,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w700,
               color: HermesTokens.textPrimary,
@@ -1136,7 +1248,7 @@ class _HermesConnectionGuideSheetState
           const SizedBox(height: 3),
           Text(
             subtitle,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               color: HermesTokens.textMuted,
               height: 1.3,
@@ -1144,7 +1256,7 @@ class _HermesConnectionGuideSheetState
           ),
 
           const SizedBox(height: 12),
-          const Divider(height: 1, color: HermesTokens.divider),
+          Divider(height: 1, color: HermesTokens.divider),
           const SizedBox(height: 12),
 
           for (int i = 0; i < steps.length; i++) ...[
@@ -1172,7 +1284,7 @@ class _HermesConnectionGuideSheetState
           ),
           child: Text(
             '$index',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 10,
               fontWeight: FontWeight.w700,
               color: HermesTokens.textSecondary,
@@ -1186,7 +1298,7 @@ class _HermesConnectionGuideSheetState
             children: [
               Text(
                 step.title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,
                   color: HermesTokens.textPrimary,
@@ -1196,7 +1308,7 @@ class _HermesConnectionGuideSheetState
                 const SizedBox(height: 2),
                 Text(
                   step.details!,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
                     color: HermesTokens.textSecondary,
                     height: 1.35,
@@ -1216,7 +1328,7 @@ class _HermesConnectionGuideSheetState
                       Expanded(
                         child: Text(
                           step.code!,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontFamily: 'JetBrains Mono',
                             fontSize: 11,
                             color: HermesTokens.accentText,
@@ -1234,7 +1346,7 @@ class _HermesConnectionGuideSheetState
                           );
                         },
                         borderRadius: BorderRadius.circular(4),
-                        child: const Padding(
+                        child: Padding(
                           padding: EdgeInsets.all(3),
                           child: Icon(
                             Icons.copy_rounded,

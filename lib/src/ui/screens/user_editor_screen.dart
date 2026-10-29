@@ -110,7 +110,7 @@ Language: Indonesian / English
         backgroundColor: HermesTokens.bgPrimary,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: HermesTokens.textPrimary),
+          icon: Icon(Icons.arrow_back, color: HermesTokens.textPrimary),
           onPressed: () {
             if (_dirty) {
               showDialog(
@@ -119,20 +119,20 @@ Language: Indonesian / English
                   backgroundColor: HermesTokens.bgElevated,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-                    side: const BorderSide(color: HermesTokens.borderBright),
+                    side: BorderSide(color: HermesTokens.borderBright),
                   ),
-                  title: const Text(
+                  title: Text(
                     "Discard changes?",
                     style: TextStyle(color: HermesTokens.textPrimary, fontSize: 16),
                   ),
-                  content: const Text(
+                  content: Text(
                     "You have unsaved changes in USER.md.",
                     style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13),
                   ),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text("Keep Editing", style: TextStyle(color: HermesTokens.textMuted)),
+                      child: Text("Keep Editing", style: TextStyle(color: HermesTokens.textMuted)),
                     ),
                     FilledButton(
                       style: FilledButton.styleFrom(
@@ -155,7 +155,7 @@ Language: Indonesian / English
             }
           },
         ),
-        title: const Text(
+        title: Text(
           "User Profile",
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
@@ -172,7 +172,7 @@ Language: Indonesian / English
                     width: 48,
                     height: 48,
                     decoration: NeumorphicDecoration.raised(radius: 14),
-                    child: const Icon(
+                    child: Icon(
                       Icons.person_outline,
                       size: 24,
                       color: HermesTokens.accent,
@@ -185,14 +185,14 @@ Language: Indonesian / English
                       children: [
                         Text(
                           _extractUserName(_ctrl.text),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
                             color: HermesTokens.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 2),
-                        const Text(
+                        Text(
                           "Operator context, preferences, & role (USER.md)",
                           style: TextStyle(
                             fontSize: 12,
@@ -205,10 +205,10 @@ Language: Indonesian / English
                 ],
               ),
             ),
-            const Divider(color: HermesTokens.divider, height: 1),
+            Divider(color: HermesTokens.divider, height: 1),
 
             // Section label
-            const Padding(
+            Padding(
               padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
               child: Align(
                 alignment: Alignment.centerLeft,

@@ -4,6 +4,7 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'accessibility_service.dart';
+import 'shell_executor_service.dart';
 
 class MobileActionResult {
   final bool success;
@@ -44,9 +45,15 @@ class MobileActionRequest {
 class DeviceExecutorService {
   static const String deviceCapabilityPrompt = '''
 [DEVICE CONTROL CAPABILITY]
-You can execute automated actions on the user's Android phone. To execute an action, output a JSON block in this exact format:
+CRITICAL RULES FOR ANDROID CONTROL:
+1. All device actions execute LOCALLY on the user's Android phone via Hermes Mobile client.
+2. NEVER use server-side tools (such as "terminal", "bash", "execute_code", or "python") for mobile phone tasks. The server has no connection to the phone.
+3. You MUST directly emit the ```mobile_action code block in your conversational reply.
+4. Do NOT stop after your thought process; always emit the ```mobile_action block or reply text immediately.
+
+Format:
 ```mobile_action
-{"action": "send_whatsapp", "phone": "08123456789", "message": "Halo bep"}
+{"action": "send_whatsapp", "phone": "08123456789", "message": "Halo"}
 ```
 Supported actions:
 - `send_whatsapp`: Sends a WhatsApp message automatically. Params: "phone" (optional if opening active chat), "message".
@@ -65,6 +72,33 @@ Supported actions:
 - `vibrate`: Vibrates the device.
 - `check_accessibility`: Checks if Android Accessibility Service is active for zero-touch automation.
 ''';
+
+  static const String shellCapabilityPrompt = '''
+[PRIVILEGED SHELL CAPABILITY]
+CRITICAL RULES FOR PRIVILEGED SHELL:
+1. Privileged Android shell execution is active LOCALLY on the user's phone via Shizuku Next (UID 2000).
+2. NEVER call server-side tools (such as "terminal", "bash", "execute_code", or "python") to run Android shell commands. Server tools run on the remote PC/server host, NOT on the user's phone.
+3. You MUST directly output the ```mobile_action code block in your conversational reply.
+4. Do NOT finish your turn with only internal reasoning; always output the ```mobile_action block or explanation immediately.
+
+Format:
+```mobile_action
+{"action": "adb_shell", "command": "dumpsys battery"}
+```
+Supported shell actions:
+- `adb_shell`: Executes an Android system shell command on the phone (for example `dumpsys battery`, `dumpsys meminfo`, `dumpsys thermal`, `cat /sys/class/thermal/thermal_zone*/temp`, `pm list packages -3`, `getprop`, `logcat -d -t 50`). Params: "command", optional "timeout_ms".
+- `check_shell`: Checks current Shizuku Next privilege status.
+Every `adb_shell` action requires operator approval on the phone before execution, and destructive system commands are blocked locally.
+''';
+
+  /// The capability prompt is sent once per session and only when the
+  /// Accessibility Service or a privileged shell backend is active.
+  static bool shouldAnnounceCapabilities({
+    required bool accessibilityEnabled,
+    bool shellAuthorized = false,
+    required bool alreadyAnnounced,
+  }) =>
+      (accessibilityEnabled || shellAuthorized) && !alreadyAnnounced;
 
   /// Extracts all embedded mobile action blocks from text.
   static List<MobileActionRequest> extractActions(String text) {
@@ -103,6 +137,89 @@ Supported actions:
     }
 
     return results;
+  }
+
+  /// Checks if an action performs side-effects (writes, external communication, clicks, navigation).
+  static bool isSensitiveAction(String action) {
+    final act = action.toLowerCase().trim();
+    switch (act) {
+      case 'send_whatsapp':
+      case 'whatsapp':
+      case 'click':
+      case 'type':
+      case 'input_text':
+      case 'global':
+      case 'navigate':
+      case 'swipe':
+      case 'open_app':
+      case 'call':
+      case 'send_sms':
+      case 'open_url':
+      case 'set_clipboard':
+      case 'enable_accessibility':
+      case 'adb_shell':
+      case 'shell':
+      case 'shizuku_shell':
+        return true;
+      case 'read_screen':
+      case 'screen':
+      case 'get_connectivity':
+      case 'get_device_info':
+      case 'get_clipboard':
+      case 'vibrate':
+      case 'check_accessibility':
+      case 'check_shell':
+      default:
+        return false;
+    }
+  }
+
+  /// Returns a clean human-readable summary of the action for confirmation dialogs/cards.
+  static String getActionSummary(String action, Map<String, dynamic> params) {
+    final act = action.toLowerCase().trim();
+    switch (act) {
+      case 'send_whatsapp':
+      case 'whatsapp':
+        final phone = (params['phone'] ?? params['number'] ?? params['target'] ?? '').toString().trim();
+        final msg = (params['message'] ?? params['text'] ?? params['body'] ?? '').toString();
+        return phone.isNotEmpty
+            ? 'Send WhatsApp message to $phone: "$msg"'
+            : 'Send WhatsApp message in active chat: "$msg"';
+      case 'click':
+        final text = params['text'] ?? params['id'] ?? (params['x'] != null ? 'koordinat (${params['x']}, ${params['y']})' : 'elemen layar');
+        return 'Klik $text';
+      case 'type':
+      case 'input_text':
+        final text = (params['text'] ?? params['content'] ?? '').toString();
+        return 'Ketik teks: "$text"';
+      case 'global':
+      case 'navigate':
+        final target = (params['target'] ?? params['action'] ?? 'back').toString();
+        return 'Navigate Android system ($target)';
+      case 'swipe':
+        return 'Gerakan swipe pada layar';
+      case 'open_app':
+        final app = (params['target'] ?? params['app'] ?? '').toString();
+        return 'Open application $app';
+      case 'call':
+        final phone = (params['phone'] ?? '').toString();
+        return 'Panggilan telepon ke $phone';
+      case 'send_sms':
+        final phone = (params['phone'] ?? '').toString();
+        return 'Send SMS to $phone';
+      case 'open_url':
+        final url = (params['url'] ?? params['target'] ?? '').toString();
+        return 'Open link: $url';
+      case 'set_clipboard':
+        return 'Tulis data ke clipboard';
+      case 'adb_shell':
+      case 'shell':
+      case 'shizuku_shell':
+        final cmd = (params['command'] ?? params['cmd'] ?? params['target'] ?? '').toString().trim();
+        return 'Run Android shell command:\n$cmd';
+      default:
+        return 'Eksekusi aksi: $action';
+    }
   }
 
   /// Executes a given mobile action natively on the device.
@@ -194,6 +311,25 @@ Supported actions:
 
       case 'vibrate':
         return await _vibrate();
+
+      case 'adb_shell':
+      case 'shell':
+      case 'shizuku_shell':
+        final cmd = (params['command'] ?? params['cmd'] ?? params['target'] ?? '').toString().trim();
+        final rawTimeout = params['timeout_ms'] ?? params['timeoutMs'];
+        final timeoutMs = rawTimeout is num
+            ? rawTimeout.toInt()
+            : (int.tryParse(rawTimeout?.toString() ?? '') ?? 15000);
+        return await _executeAdbShell(cmd, timeoutMs: timeoutMs);
+
+      case 'check_shell':
+        final status = await ShellExecutorService.getStatus();
+        return MobileActionResult(
+          success: status.authorized,
+          action: 'check_shell',
+          message: status.modeLabel,
+          data: status.toJson(),
+        );
 
       default:
         return MobileActionResult(
@@ -679,5 +815,52 @@ Supported actions:
         message: 'Failed to vibrate: $e',
       );
     }
+  }
+
+  static Future<MobileActionResult> _executeAdbShell(
+    String command, {
+    int timeoutMs = 15000,
+  }) async {
+    final boundedMs = timeoutMs.clamp(1000, 60000);
+    final res = await ShellExecutorService.execute(
+      command,
+      timeout: Duration(milliseconds: boundedMs),
+    );
+
+    if (res.blocked) {
+      return MobileActionResult(
+        success: false,
+        action: 'adb_shell',
+        message: 'Blocked for device safety: ${res.blockReason}',
+        data: {
+          'command': command,
+          'blocked': true,
+          'reason': res.blockReason,
+        },
+      );
+    }
+
+    final outputPreview = res.stdout.isNotEmpty
+        ? res.stdout
+        : (res.stderr.isNotEmpty ? res.stderr : '(no output)');
+    final previewTrimmed = outputPreview.length > 600
+        ? '${outputPreview.substring(0, 600)}...'
+        : outputPreview;
+
+    final statusSummary = res.timedOut
+        ? 'Shell command timed out after ${boundedMs}ms'
+        : (res.success
+            ? 'Shell command completed via ${res.backend} (exit 0)'
+            : 'Shell command exited with code ${res.exitCode}');
+
+    return MobileActionResult(
+      success: res.success,
+      action: 'adb_shell',
+      message: '$statusSummary:\n$previewTrimmed',
+      data: {
+        'command': command,
+        ...res.toJson(),
+      },
+    );
   }
 }

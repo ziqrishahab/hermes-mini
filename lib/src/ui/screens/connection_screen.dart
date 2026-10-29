@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../models/connection_config.dart';
 import '../../providers/connection_provider.dart';
+import '../../providers/theme_provider.dart';
 import '../../theme.dart';
 import '../widgets/tactile_feedback.dart';
 import '../widgets/hermes_setup_guide.dart';
@@ -24,7 +26,6 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
 
   bool _testing = false;
   bool _showApiKey = false;
-  bool _showGuide = false;
 
   @override
   void initState() {
@@ -49,13 +50,18 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
   }
 
   Future<void> _connect() async {
-    final url = _apiUrlCtrl.text.trim();
+    var url = _apiUrlCtrl.text.trim().replaceAll(RegExp(r'\s+'), '');
     final key = _apiKeyCtrl.text.trim();
 
     if (url.isEmpty || key.isEmpty) {
       _showError('Please enter both Gateway URL and Password / API Key');
       return;
     }
+
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      url = 'http://$url';
+    }
+    _apiUrlCtrl.text = url;
 
     final config = ConnectionConfig(
       mode: ConnectionMode.remote,
@@ -92,8 +98,83 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
     );
   }
 
+  void _showGatewaySetupSheet() {
+    HapticFeedback.lightImpact();
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Container(
+          padding: const EdgeInsets.fromLTRB(22, 12, 22, 28),
+          decoration: BoxDecoration(
+            color: HermesTokens.bgPrimary,
+            borderRadius: const BorderRadius.vertical(
+              top: Radius.circular(HermesTokens.radiusLg),
+            ),
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withValues(alpha: 0.35),
+                blurRadius: 16,
+                offset: const Offset(0, -4),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 36,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: HermesTokens.border,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 18),
+              Text(
+                'Remote Gateway Setup Guide',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: HermesTokens.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 14),
+              const HermesSetupGuide(),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: HermesTokens.accent,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    elevation: 0,
+                  ),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text(
+                    'Close',
+                    style: TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final isDark = ref.watch(isDarkProvider);
     return Scaffold(
       backgroundColor: HermesTokens.bgPrimary,
       body: SafeArea(
@@ -109,23 +190,18 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                   // Logo Container (Neumorphic Raised with Hermes Asset)
                   Center(
                     child: Container(
-                      width: 110,
-                      height: 110,
+                      width: 132,
+                      height: 132,
                       decoration: NeumorphicDecoration.circle(
+                        color: isDark ? HermesTokens.charcoalSlate : HermesTokens.coolSilver,
                         distance: 6,
                         blur: 14,
+                        isDark: isDark,
                       ),
                       padding: const EdgeInsets.all(14),
                       child: Image.asset(
-                        'assets/icons/pixie_transparent.png',
+                        HermesTokens.brandIconSet,
                         fit: BoxFit.contain,
-                        errorBuilder: (_, _, _) => const Center(
-                          child: Icon(
-                            Icons.auto_awesome_rounded,
-                            size: 42,
-                            color: HermesTokens.accent,
-                          ),
-                        ),
                       ),
                     ),
                   ),
@@ -133,7 +209,7 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                   const SizedBox(height: 20),
 
                   // Brand Title
-                  const Center(
+                  Center(
                     child: Text(
                       'MyPixie',
                       style: TextStyle(
@@ -147,7 +223,7 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
 
                   const SizedBox(height: 6),
 
-                  const Center(
+                  Center(
                     child: Text(
                       'Remote Gateway Connection',
                       style: TextStyle(
@@ -177,8 +253,7 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                           controller: _apiUrlCtrl,
                           focusNode: _apiUrlFocus,
                           label: 'GATEWAY URL',
-                          hint: 'Hostname / IP Address',
-                          icon: Icons.link_rounded,
+                          hint: 'http://host:port',
                           keyboardType: TextInputType.url,
                         ),
                         const SizedBox(height: 18),
@@ -188,8 +263,7 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                           controller: _apiKeyCtrl,
                           focusNode: _apiKeyFocus,
                           label: 'PASSWORD / API KEY',
-                          hint: 'Password / Api Token',
-                          icon: Icons.key_outlined,
+                          hint: 'Password or API key',
                           keyboardType: TextInputType.visiblePassword,
                           obscureText: !_showApiKey,
                           suffix: IconButton(
@@ -204,46 +278,6 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                                 setState(() => _showApiKey = !_showApiKey),
                           ),
                         ),
-
-                        const SizedBox(height: 14),
-
-                        // Toggle Connection Setup Guide
-                        GestureDetector(
-                          onTap: () => setState(() => _showGuide = !_showGuide),
-                          child: Row(
-                            children: [
-                              Icon(
-                                _showGuide
-                                    ? Icons.keyboard_arrow_up_rounded
-                                    : Icons.help_outline_rounded,
-                                size: 15,
-                                color: HermesTokens.accentText,
-                              ),
-                              const SizedBox(width: 5),
-                              Text(
-                                _showGuide
-                                    ? 'Hide connection guide'
-                                    : 'How does Remote Gateway work?',
-                                style: const TextStyle(
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  color: HermesTokens.accentText,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-
-                        if (_showGuide) ...[
-                          const SizedBox(height: 12),
-                          Container(
-                            padding: const EdgeInsets.all(12),
-                            decoration: NeumorphicDecoration.recessed(
-                              radius: 12,
-                            ),
-                            child: const HermesSetupGuide(),
-                          ),
-                        ],
 
                         const SizedBox(height: 22),
 
@@ -268,61 +302,64 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
                                       color: Colors.white,
                                     ),
                                   )
-                                : const Row(
-                                    mainAxisAlignment: MainAxisAlignment.center,
-                                    children: [
-                                      Icon(
-                                        Icons.arrow_forward_rounded,
-                                        size: 18,
-                                        color: Colors.white,
-                                      ),
-                                      SizedBox(width: 8),
-                                      Text(
-                                        'Connect',
-                                        style: TextStyle(
-                                          fontSize: 14,
-                                          fontWeight: FontWeight.w700,
-                                          color: Colors.white,
-                                          letterSpacing: 0.3,
-                                        ),
-                                      ),
-                                    ],
+                                : const Text(
+                                    'Connect',
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.w700,
+                                      color: Colors.white,
+                                      letterSpacing: 0.3,
+                                    ),
                                   ),
                           ),
                         ),
-                      ],
-                    ),
-                  ),
 
-                  const SizedBox(height: 22),
+                        const SizedBox(height: 12),
 
-                  // Footer Security Note (Recessed Neumorphic Pill)
-                  Center(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      decoration: NeumorphicDecoration.recessed(radius: 20),
-                      child: const Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(
-                            Icons.lock_outline,
-                            size: 13,
-                            color: HermesTokens.textMuted,
-                          ),
-                          SizedBox(width: 6),
-                          Text(
-                            'Credentials stored securely on device',
-                            style: TextStyle(
-                              fontSize: 11,
-                              color: HermesTokens.textMuted,
-                              fontWeight: FontWeight.w500,
+                        // Gateway Setup Modal Button (Neumorphic Raised Template)
+                        TactileContainer(
+                          onTap: _showGatewaySetupSheet,
+                          child: Container(
+                            height: 44,
+                            alignment: Alignment.center,
+                            decoration: NeumorphicDecoration.raised(
+                              radius: 14,
+                              distance: 2.5,
+                              blur: 5,
+                            ),
+                            child: Text(
+                              'Gateway Setup Guide',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w600,
+                                color: HermesTokens.textPrimary,
+                              ),
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                        const SizedBox(height: 14),
+
+                        Center(
+                          child: GestureDetector(
+                            onTap: () {
+                              HapticFeedback.selectionClick();
+                              ref.read(isOfflineModeProvider.notifier).state = true;
+                              GoRouter.maybeOf(context)?.go('/home');
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 12),
+                              child: Text(
+                                'Explore in Offline Mode',
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                  color: HermesTokens.textMuted,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
@@ -338,18 +375,31 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
     required TextEditingController controller,
     required String label,
     required String hint,
-    required IconData icon,
     FocusNode? focusNode,
     TextInputType? keyboardType,
     bool obscureText = false,
     Widget? suffix,
   }) {
+    final isDark = HermesTokens.isDark;
+
+    final borderSide = BorderSide(
+      color: isDark ? const Color(0x22FFFFFF) : const Color(0x2294A3B8),
+      width: 1.0,
+    );
+
+    final focusBorderSide = BorderSide(
+      color: HermesTokens.accent,
+      width: 1.4,
+    );
+
+    final borderRadius = BorderRadius.circular(12);
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 10,
             fontWeight: FontWeight.w700,
             letterSpacing: 0.8,
@@ -357,30 +407,40 @@ class _ConnectionScreenState extends ConsumerState<ConnectionScreen> {
           ),
         ),
         const SizedBox(height: 7),
-        Container(
-          decoration: NeumorphicDecoration.recessed(radius: 12),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
-          child: TextField(
-            controller: controller,
-            focusNode: focusNode,
-            obscureText: obscureText,
-            keyboardType: keyboardType,
-            style: const TextStyle(
-              color: HermesTokens.textPrimary,
+        TextField(
+          controller: controller,
+          focusNode: focusNode,
+          obscureText: obscureText,
+          keyboardType: keyboardType,
+          style: TextStyle(
+            color: HermesTokens.textPrimary,
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+          ),
+          decoration: InputDecoration(
+            filled: true,
+            fillColor: HermesTokens.bgTertiary,
+            hintText: hint,
+            hintStyle: TextStyle(
+              color: HermesTokens.textMuted,
               fontSize: 13,
-              fontWeight: FontWeight.w500,
             ),
-            decoration: InputDecoration(
-              icon: Icon(icon, size: 18, color: HermesTokens.textMuted),
-              hintText: hint,
-              hintStyle: const TextStyle(
-                color: HermesTokens.textMuted,
-                fontSize: 13,
-              ),
-              suffixIcon: suffix,
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(vertical: 12),
-              isDense: true,
+            suffixIcon: suffix,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 14,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: borderRadius,
+              borderSide: borderSide,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: borderRadius,
+              borderSide: borderSide,
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: borderRadius,
+              borderSide: focusBorderSide,
             ),
           ),
         ),

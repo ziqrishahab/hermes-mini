@@ -92,7 +92,7 @@ class _HermesLoadingIndicatorState extends State<HermesLoadingIndicator>
                     child: Container(
                       decoration: BoxDecoration(
                         borderRadius: BorderRadius.circular(widget.height),
-                        gradient: const LinearGradient(
+                        gradient: LinearGradient(
                           colors: [
                             Color(0xFF38BDF8), // Electric cyan-blue (matches wing glow)
                             HermesTokens.accent, // Hermes purple

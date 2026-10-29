@@ -3,7 +3,7 @@ import 'package:flutter/services.dart';
 
 import '../../theme.dart';
 
-enum TargetOs { windows, linux, macos }
+enum RemoteSetupMethod { tailscale, cloudflare }
 
 class HermesSetupGuide extends StatefulWidget {
   final bool compact;
@@ -18,7 +18,7 @@ class HermesSetupGuide extends StatefulWidget {
 }
 
 class _HermesSetupGuideState extends State<HermesSetupGuide> {
-  TargetOs _selectedOs = TargetOs.windows;
+  RemoteSetupMethod _selectedMethod = RemoteSetupMethod.tailscale;
 
   @override
   Widget build(BuildContext context) {
@@ -26,120 +26,49 @@ class _HermesSetupGuideState extends State<HermesSetupGuide> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // OS Selector Tabs
+        // Method Selector Tabs
         Container(
           padding: const EdgeInsets.all(4),
-          decoration: NeumorphicDecoration.recessed(radius: 10),
+          decoration: NeumorphicDecoration.recessed(radius: 12),
           child: Row(
             children: [
-              _buildOsTab(TargetOs.windows, "Windows"),
-              _buildOsTab(TargetOs.linux, "Linux"),
-              _buildOsTab(TargetOs.macos, "macOS"),
+              _buildMethodTab(RemoteSetupMethod.tailscale, "Tailscale (Mesh VPN)"),
+              _buildMethodTab(RemoteSetupMethod.cloudflare, "Cloudflare Tunnel"),
             ],
           ),
         ),
 
-        const SizedBox(height: 14),
+        const SizedBox(height: 16),
 
-        // Step 1: Start Server
-        _buildStepHeader("1. Start Hermes Host"),
-        const SizedBox(height: 4),
-        const Text(
-          "Run this in your host terminal to listen for LAN connections:",
-          style: TextStyle(
-            fontSize: 11,
-            color: HermesTokens.textMuted,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 6),
-        _buildCodeBox("hermes dashboard --host 0.0.0.0 --port 9119"),
-
-        const SizedBox(height: 12),
-
-        // Step 2: Get Host IP
-        _buildStepHeader("2. Find Host Local IP"),
-        const SizedBox(height: 4),
-        Text(
-          _getIpInstruction(),
-          style: const TextStyle(
-            fontSize: 11,
-            color: HermesTokens.textMuted,
-            height: 1.4,
-          ),
-        ),
-        const SizedBox(height: 6),
-        _buildCodeBox(_getIpCommand()),
-
-        const SizedBox(height: 12),
-
-        // Step 3: Connect
-        _buildStepHeader("3. Connect from Mobile"),
-        const SizedBox(height: 4),
-        const Text(
-          "Ensure phone and host are on the same Wi-Fi.\n"
-          "- Gateway URL: http://<host-ip>:9119\n"
-          "- Password: Your Hermes dashboard password",
-          style: TextStyle(
-            fontSize: 11,
-            color: HermesTokens.textMuted,
-            height: 1.4,
-          ),
-        ),
-
-        const SizedBox(height: 10),
-
-        // Remote Access note
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-          decoration: BoxDecoration(
-            color: HermesTokens.bgTertiary.withValues(alpha: 0.5),
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: HermesTokens.border, width: 0.8),
-          ),
-          child: const Text(
-            "Remote Access: When away from home Wi-Fi, use Tailscale (http://100.x.y.z:9119) or a secure tunnel.",
-            style: TextStyle(
-              fontSize: 10,
-              color: HermesTokens.textSecondary,
-              height: 1.35,
-            ),
-          ),
-        ),
+        // Method Details
+        if (_selectedMethod == RemoteSetupMethod.tailscale)
+          _buildTailscaleGuide()
+        else
+          _buildCloudflareGuide(),
       ],
     );
   }
 
-  Widget _buildOsTab(TargetOs os, String label) {
-    final isSelected = _selectedOs == os;
+  Widget _buildMethodTab(RemoteSetupMethod method, String label) {
+    final isSelected = _selectedMethod == method;
     return Expanded(
       child: GestureDetector(
         onTap: () {
           HapticFeedback.selectionClick();
-          setState(() => _selectedOs = os);
+          setState(() => _selectedMethod = method);
         },
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          decoration: BoxDecoration(
-            color: isSelected ? HermesTokens.accent : Colors.transparent,
-            borderRadius: BorderRadius.circular(8),
-            boxShadow: isSelected
-                ? [
-                    BoxShadow(
-                      color: HermesTokens.accent.withValues(alpha: 0.3),
-                      blurRadius: 4,
-                      offset: const Offset(0, 1),
-                    ),
-                  ]
-                : null,
-          ),
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          decoration: isSelected
+              ? NeumorphicDecoration.switcherThumb(radius: 8)
+              : null,
           child: Center(
             child: Text(
               label,
               style: TextStyle(
                 fontSize: 11,
-                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w600,
-                color: isSelected ? Colors.white : HermesTokens.textMuted,
+                fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
+                color: isSelected ? HermesTokens.accent : HermesTokens.textMuted,
               ),
             ),
           ),
@@ -148,37 +77,149 @@ class _HermesSetupGuideState extends State<HermesSetupGuide> {
     );
   }
 
+  Widget _buildTailscaleGuide() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildStepHeader("1. Install Tailscale"),
+        const SizedBox(height: 4),
+        Text(
+          "Install Tailscale on both your host computer and Android phone. Sign in with the same account (Google, GitHub, etc.) on both devices.",
+          style: TextStyle(
+            fontSize: 11,
+            color: HermesTokens.textSecondary,
+            height: 1.45,
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        _buildStepHeader("2. Start Hermes Host"),
+        const SizedBox(height: 4),
+        Text(
+          "Run Hermes daemon on your host computer:",
+          style: TextStyle(
+            fontSize: 11,
+            color: HermesTokens.textSecondary,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 6),
+        _buildCodeBox("hermes dashboard --port 9119"),
+
+        const SizedBox(height: 12),
+
+        _buildStepHeader("3. Connect using Tailscale IP"),
+        const SizedBox(height: 4),
+        Text(
+          "Copy your host computer's 100.x.y.z Tailscale IP from the Tailscale app, then connect using:",
+          style: TextStyle(
+            fontSize: 11,
+            color: HermesTokens.textSecondary,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 6),
+        _buildCodeBox("http://100.x.y.z:9119"),
+
+        const SizedBox(height: 12),
+
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: HermesTokens.bgTertiary.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: HermesTokens.border, width: 0.8),
+          ),
+          child: Text(
+            "Advantage: End-to-end encrypted direct connection. Works over 4G/5G anywhere in the world without exposing ports to the public internet.",
+            style: TextStyle(
+              fontSize: 10,
+              color: HermesTokens.textMuted,
+              height: 1.35,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCloudflareGuide() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _buildStepHeader("1. Run Cloudflare Quick Tunnel"),
+        const SizedBox(height: 4),
+        Text(
+          "Run this single command on your host computer terminal. No account or domain required:",
+          style: TextStyle(
+            fontSize: 11,
+            color: HermesTokens.textSecondary,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 6),
+        _buildCodeBox("cloudflared tunnel --url http://localhost:9119"),
+
+        const SizedBox(height: 12),
+
+        _buildStepHeader("2. Copy Public HTTPS URL"),
+        const SizedBox(height: 4),
+        Text(
+          "Cloudflared will output a public HTTPS link in your terminal, for example:",
+          style: TextStyle(
+            fontSize: 11,
+            color: HermesTokens.textSecondary,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 6),
+        _buildCodeBox("https://xxxx.trycloudflare.com"),
+
+        const SizedBox(height: 12),
+
+        _buildStepHeader("3. Connect from Mobile"),
+        const SizedBox(height: 4),
+        Text(
+          "Paste the HTTPS URL into the Gateway URL field above and enter your Hermes password.",
+          style: TextStyle(
+            fontSize: 11,
+            color: HermesTokens.textSecondary,
+            height: 1.4,
+          ),
+        ),
+
+        const SizedBox(height: 12),
+
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: HermesTokens.bgTertiary.withValues(alpha: 0.5),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: HermesTokens.border, width: 0.8),
+          ),
+          child: Text(
+            "Advantage: Instant public HTTPS tunnel without installing client apps on your phone or configuring router firewall.",
+            style: TextStyle(
+              fontSize: 10,
+              color: HermesTokens.textMuted,
+              height: 1.35,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildStepHeader(String title) {
     return Text(
       title,
-      style: const TextStyle(
-        fontSize: 11,
+      style: TextStyle(
+        fontSize: 12,
         fontWeight: FontWeight.w700,
         color: HermesTokens.textPrimary,
       ),
     );
-  }
-
-  String _getIpInstruction() {
-    switch (_selectedOs) {
-      case TargetOs.windows:
-        return "Open PowerShell or Command Prompt, run this command, and look for 'IPv4 Address' under your Wi-Fi adapter:";
-      case TargetOs.linux:
-        return "Run this in your terminal to display your local network IP:";
-      case TargetOs.macos:
-        return "Run this in Terminal to print your active Wi-Fi IP address (or check System Settings > Wi-Fi > Details):";
-    }
-  }
-
-  String _getIpCommand() {
-    switch (_selectedOs) {
-      case TargetOs.windows:
-        return "ipconfig";
-      case TargetOs.linux:
-        return "hostname -I";
-      case TargetOs.macos:
-        return "ipconfig getifaddr en0";
-    }
   }
 
   Widget _buildCodeBox(String code) {
@@ -195,7 +236,7 @@ class _HermesSetupGuideState extends State<HermesSetupGuide> {
           Expanded(
             child: SelectableText(
               code,
-              style: const TextStyle(
+              style: TextStyle(
                 fontFamily: "monospace",
                 fontSize: 11,
                 fontWeight: FontWeight.w600,
@@ -215,8 +256,8 @@ class _HermesSetupGuideState extends State<HermesSetupGuide> {
                 ),
               );
             },
-            child: const Padding(
-              padding: EdgeInsets.only(left: 6),
+            child: Padding(
+              padding: const EdgeInsets.only(left: 6),
               child: Icon(
                 Icons.copy_rounded,
                 size: 13,

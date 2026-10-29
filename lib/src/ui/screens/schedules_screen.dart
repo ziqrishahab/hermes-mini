@@ -2,12 +2,27 @@ import "package:flutter/material.dart";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:go_router/go_router.dart";
 import "../../providers/connection_provider.dart";
+import "../../providers/theme_provider.dart";
 import "../../theme.dart";
+import "dart:async";
+import "../../services/local_database_service.dart";
 
 final schedulesProvider = FutureProvider<List<Map<String, dynamic>>>((ref) async {
   final conn = ref.watch(connectionProvider).valueOrNull;
-  if (conn == null) return [];
-  return conn.getSchedules();
+  if (conn == null) {
+    return await LocalDatabaseService.instance.getSchedules();
+  }
+  try {
+    final remote = await conn.getSchedules();
+    if (remote.isNotEmpty) {
+      unawaited(LocalDatabaseService.instance.saveSchedules(remote));
+    }
+    return remote;
+  } catch (_) {
+    final cached = await LocalDatabaseService.instance.getSchedules();
+    if (cached.isNotEmpty) return cached;
+    rethrow;
+  }
 });
 
 // Cron expression validator
@@ -87,6 +102,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    ref.watch(isDarkProvider);
     final schedulesAsync = ref.watch(schedulesProvider);
 
     return Scaffold(
@@ -95,7 +111,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
         backgroundColor: HermesTokens.bgPrimary,
         elevation: 0,
         centerTitle: true,
-        title: const Text(
+        title: Text(
           "Cron Scheduler",
           style: TextStyle(
             fontSize: 18,
@@ -119,8 +135,8 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     child: TextField(
                       controller: _searchCtrl,
-                      style: const TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
-                      decoration: const InputDecoration(
+                      style: TextStyle(color: HermesTokens.textPrimary, fontSize: 13),
+                      decoration: InputDecoration(
                         hintText: "Search schedules...",
                         hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
                         prefixIcon: Icon(Icons.search, color: HermesTokens.textMuted, size: 18),
@@ -141,7 +157,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                       padding: const EdgeInsets.only(bottom: 2, left: 2),
                       child: Text(
                         "SCHEDULES (${schedules.length})",
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 11,
                           fontWeight: FontWeight.w600,
                           color: HermesTokens.textMuted,
@@ -192,15 +208,15 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                                     width: 56,
                                     height: 56,
                                     decoration: NeumorphicDecoration.raised(radius: 16),
-                                    child: const Icon(Icons.schedule, size: 26, color: HermesTokens.accent),
+                                    child: Icon(Icons.schedule, size: 26, color: HermesTokens.accent),
                                   ),
                                   const SizedBox(height: 16),
-                                  const Text(
+                                  Text(
                                     "No schedules found",
                                     style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
                                   ),
                                   const SizedBox(height: 6),
-                                  const Text(
+                                  Text(
                                     "Pull down to refresh or create a cron schedule.",
                                     style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                                   ),
@@ -219,7 +235,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                       itemBuilder: (context, index) => _scheduleCard(filtered[index]),
                     );
                   },
-                  loading: () => const Center(
+                  loading: () => Center(
                     child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
                   ),
                   error: (e, _) => Center(
@@ -234,7 +250,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                           const SizedBox(height: 8),
                           TextButton(
                             onPressed: () => ref.invalidate(schedulesProvider),
-                            child: const Text("Retry", style: TextStyle(color: HermesTokens.accentText)),
+                            child: Text("Retry", style: TextStyle(color: HermesTokens.accentText)),
                           ),
                         ],
                       ),
@@ -309,7 +325,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                     children: [
                       Text(
                         name,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
                           color: HermesTokens.textPrimary,
@@ -327,7 +343,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                             ),
                             child: Text(
                               cron,
-                              style: const TextStyle(
+                              style: TextStyle(
                                 fontFamily: 'monospace',
                                 fontSize: 10,
                                 color: HermesTokens.textSecondary,
@@ -340,7 +356,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                               nextRun,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                              style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
                             ),
                           ),
                         ],
@@ -371,7 +387,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                       "Target: $target",
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                      style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
                     ),
                   )
                 else
@@ -462,20 +478,20 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-          side: const BorderSide(color: HermesTokens.borderBright),
+          side: BorderSide(color: HermesTokens.borderBright),
         ),
-        title: const Text(
+        title: Text(
           "Delete Schedule?",
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600, color: HermesTokens.textPrimary),
         ),
-        content: const Text(
+        content: Text(
           "This schedule will be permanently deleted. This action cannot be undone.",
           style: TextStyle(fontSize: 13, color: HermesTokens.textSecondary),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),

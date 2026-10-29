@@ -7,8 +7,9 @@ import "schedules_screen.dart";
 
 class CreateEditScheduleScreen extends ConsumerStatefulWidget {
   final String? scheduleId;
+  final Map<String, dynamic>? initialData;
 
-  const CreateEditScheduleScreen({super.key, this.scheduleId});
+  const CreateEditScheduleScreen({super.key, this.scheduleId, this.initialData});
   @override
   ConsumerState<CreateEditScheduleScreen> createState() => _CreateEditScheduleScreenState();
 }
@@ -27,8 +28,63 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
   @override
   void initState() {
     super.initState();
-    _nameCtrl.text = isEditing ? "Backup Database" : "";
-    _targetCtrl.text = isEditing ? "telegram" : "";
+    if (widget.initialData != null) {
+      _applyScheduleData(widget.initialData!);
+    } else if (isEditing) {
+      _loadScheduleData();
+    }
+  }
+
+  void _applyScheduleData(Map<String, dynamic> data) {
+    _nameCtrl.text = (data['name'] ?? '').toString();
+    _targetCtrl.text = (data['target'] ?? data['prompt'] ?? '').toString();
+    final cron = (data['cron'] ?? data['schedule'] ?? '').toString();
+    if (cron.isNotEmpty) {
+      _parseCron(cron);
+    }
+  }
+
+  Future<void> _loadScheduleData() async {
+    final conn = ref.read(connectionProvider).valueOrNull;
+    if (conn == null || widget.scheduleId == null) return;
+    try {
+      final schedules = await conn.getSchedules();
+      final schedule = schedules.firstWhere(
+        (s) => s['id'] == widget.scheduleId,
+        orElse: () => <String, dynamic>{},
+      );
+      if (schedule.isNotEmpty && mounted) {
+        setState(() {
+          _applyScheduleData(schedule);
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _parseCron(String cron) {
+    final parts = cron.trim().split(RegExp(r'\s+'));
+    if (parts.length >= 5) {
+      final minute = int.tryParse(parts[0]);
+      final hour = int.tryParse(parts[1]);
+      if (minute != null) _selectedMinute = minute;
+      if (hour != null) _selectedHour = hour;
+
+      final dayPart = parts[4];
+      if (dayPart == '*') {
+        _selectedDays = [0, 1, 2, 3, 4, 5, 6];
+      } else if (dayPart.contains(',')) {
+        final parsedDays = dayPart
+            .split(',')
+            .map((s) => int.tryParse(s.trim()))
+            .whereType<int>()
+            .where((d) => d >= 0 && d <= 6)
+            .toList();
+        if (parsedDays.isNotEmpty) _selectedDays = parsedDays;
+      } else if (int.tryParse(dayPart) != null) {
+        final d = int.parse(dayPart);
+        if (d >= 0 && d <= 6) _selectedDays = [d];
+      }
+    }
   }
 
   @override
@@ -52,7 +108,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
 
   String _buildDayLabel() {
     if (_selectedDays.length == 7) return "Every day";
-    if (_selectedDays.length == 5 && !_selectedDays.contains(5) && !_selectedDays.contains(6)) {
+    if (_selectedDays.length == 5 && !_selectedDays.contains(0) && !_selectedDays.contains(6)) {
       return "Monday to Friday";
     }
 
@@ -123,20 +179,20 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
         backgroundColor: HermesTokens.bgElevated,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-          side: const BorderSide(color: HermesTokens.borderBright),
+          side: BorderSide(color: HermesTokens.borderBright),
         ),
-        title: const Text(
+        title: Text(
           "Delete Schedule?",
           style: TextStyle(color: HermesTokens.textPrimary, fontSize: 16, fontWeight: FontWeight.w600),
         ),
-        content: const Text(
+        content: Text(
           "This schedule will be permanently removed. This action cannot be undone.",
           style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
-            child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+            child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
@@ -192,12 +248,12 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
         elevation: 0,
         centerTitle: true,
         leading: IconButton(
-          icon: const Icon(Icons.close, color: HermesTokens.textPrimary),
+          icon: Icon(Icons.close, color: HermesTokens.textPrimary),
           onPressed: () => context.pop(),
         ),
         title: Text(
           isEditing ? "Edit Schedule" : "New Schedule",
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 17,
             fontWeight: FontWeight.w700,
             color: HermesTokens.textPrimary,
@@ -223,7 +279,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                         Icon(Icons.delete_outline_rounded, size: 16, color: HermesTokens.error),
                         SizedBox(width: 4),
                         Text(
-                          "Hapus",
+                          "Delete",
                           style: TextStyle(
                             color: HermesTokens.error,
                             fontWeight: FontWeight.w700,
@@ -254,7 +310,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                 ),
                 child: Column(
                   children: [
-                    const Text(
+                    Text(
                       "SCHEDULED TIME",
                       style: TextStyle(
                         fontSize: 11,
@@ -270,7 +326,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
                         child: Text(
                           _formatTime(),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 42,
                             fontWeight: FontWeight.w300,
                             letterSpacing: -1,
@@ -289,7 +345,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                           distance: 2,
                           blur: 4,
                         ),
-                        child: const Row(
+                        child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
                             Icon(Icons.access_time_rounded, size: 14, color: HermesTokens.accent),
@@ -324,7 +380,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     // Field 1: Name
-                    const Text(
+                    Text(
                       "SCHEDULE NAME",
                       style: TextStyle(
                         fontSize: 11,
@@ -339,16 +395,19 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                       child: TextField(
                         controller: _nameCtrl,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: HermesTokens.textPrimary,
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
                         ),
-                        decoration: const InputDecoration(
-                          icon: Icon(Icons.label_outline, size: 18, color: HermesTokens.textMuted),
-                          hintText: "Daily Sync, Backup Local Database",
-                          hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                        decoration: InputDecoration(
+                          filled: false,
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          icon: Icon(Icons.label_outline, size: 18, color: HermesTokens.textMuted),
+                          hintText: "Schedule name",
+                          hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
                           contentPadding: EdgeInsets.symmetric(vertical: 12),
                           isDense: true,
                         ),
@@ -358,7 +417,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                     const SizedBox(height: 18),
 
                     // Field 2: Recurrence
-                    const Text(
+                    Text(
                       "RECURRENCE",
                       style: TextStyle(
                         fontSize: 11,
@@ -375,19 +434,19 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
                         child: Row(
                           children: [
-                            const Icon(Icons.repeat, size: 18, color: HermesTokens.textMuted),
+                            Icon(Icons.repeat, size: 18, color: HermesTokens.textMuted),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Text(
                                 _buildDayLabel(),
-                                style: const TextStyle(
+                                style: TextStyle(
                                   color: HermesTokens.textPrimary,
                                   fontSize: 13,
                                   fontWeight: FontWeight.w500,
                                 ),
                               ),
                             ),
-                            const Icon(Icons.chevron_right, size: 18, color: HermesTokens.textMuted),
+                            Icon(Icons.chevron_right, size: 18, color: HermesTokens.textMuted),
                           ],
                         ),
                       ),
@@ -396,7 +455,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                     const SizedBox(height: 18),
 
                     // Field 3: Target
-                    const Text(
+                    Text(
                       "TARGET CHANNEL / COMMAND",
                       style: TextStyle(
                         fontSize: 11,
@@ -411,16 +470,19 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
                       child: TextField(
                         controller: _targetCtrl,
-                        style: const TextStyle(
+                        style: TextStyle(
                           color: HermesTokens.textPrimary,
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
                         ),
-                        decoration: const InputDecoration(
-                          icon: Icon(Icons.send_outlined, size: 18, color: HermesTokens.textMuted),
-                          hintText: "general, alerts, or command",
-                          hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
+                        decoration: InputDecoration(
+                          filled: false,
                           border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          icon: Icon(Icons.send_outlined, size: 18, color: HermesTokens.textMuted),
+                          hintText: "Prompt or command",
+                          hintStyle: TextStyle(color: HermesTokens.textMuted, fontSize: 13),
                           contentPadding: EdgeInsets.symmetric(vertical: 12),
                           isDense: true,
                         ),
@@ -445,7 +507,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                         distance: 1.5,
                         blur: 3,
                       ),
-                      child: const Text(
+                      child: Text(
                         "CRON",
                         style: TextStyle(
                           fontFamily: 'monospace',
@@ -459,7 +521,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                     Expanded(
                       child: Text(
                         _buildCron(),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontFamily: 'monospace',
                           fontSize: 13,
                           fontWeight: FontWeight.w600,
@@ -530,7 +592,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
               dialHandColor: HermesTokens.accent,
               hourMinuteTextColor: HermesTokens.textPrimary,
               dayPeriodTextColor: HermesTokens.textPrimary,
-              helpTextStyle: const TextStyle(color: HermesTokens.textPrimary),
+              helpTextStyle: TextStyle(color: HermesTokens.textPrimary),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(HermesTokens.radiusMd)),
             ),
           ),
@@ -570,9 +632,9 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                     children: [
                       TextButton(
                         onPressed: () => Navigator.pop(ctx),
-                        child: const Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
+                        child: Text("Cancel", style: TextStyle(color: HermesTokens.textMuted)),
                       ),
-                      const Text(
+                      Text(
                         "Repeat Days",
                         style: TextStyle(
                           fontSize: 15,
@@ -585,7 +647,7 @@ class _CreateEditScheduleScreenState extends ConsumerState<CreateEditScheduleScr
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                           decoration: NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4),
-                          child: const Text(
+                          child: Text(
                             "Done",
                             style: TextStyle(color: HermesTokens.accentText, fontWeight: FontWeight.w700, fontSize: 12),
                           ),

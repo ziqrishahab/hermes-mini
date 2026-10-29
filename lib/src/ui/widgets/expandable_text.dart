@@ -27,13 +27,13 @@ class _ExpandableTextState extends State<ExpandableText> {
     if (widget.text.isEmpty) return const SizedBox.shrink();
 
     final defaultStyle = widget.style ??
-        const TextStyle(
+        TextStyle(
           fontSize: 12,
           color: HermesTokens.textMuted,
           height: 1.35,
         );
     final linkStyle = widget.actionStyle ??
-        const TextStyle(
+        TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.w700,
           color: HermesTokens.accent,

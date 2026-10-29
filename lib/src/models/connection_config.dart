@@ -7,7 +7,7 @@ class ConnectionConfig {
   final String? apiUrl;
   final String? apiKey;
 
-  // SSH mode
+  // SSH mode (legacy / deprecated)
   final String? sshHost;
   final int? sshPort;
   final String? sshUsername;
@@ -16,7 +16,7 @@ class ConnectionConfig {
   final int? remoteHermesPort;
 
   const ConnectionConfig({
-    required this.mode,
+    this.mode = ConnectionMode.remote,
     this.apiUrl,
     this.apiKey,
     this.sshHost,
@@ -41,21 +41,21 @@ class ConnectionConfig {
 
   bool get usePasswordAuth => sshPassword != null && sshPassword!.isNotEmpty;
 
-  Map<String, dynamic> toJson() => {
+  Map<String, dynamic> toJson({bool includeSecrets = true}) => {
     'mode': mode.name,
     'apiUrl': apiUrl,
-    'apiKey': apiKey,
+    'apiKey': includeSecrets ? apiKey : null,
     'sshHost': sshHost,
     'sshPort': sshPort,
     'sshUsername': sshUsername,
     'privateKeyPath': privateKeyPath,
-    'sshPassword': sshPassword,
+    'sshPassword': includeSecrets ? sshPassword : null,
     'remoteHermesPort': remoteHermesPort,
   };
 
   factory ConnectionConfig.fromJson(Map<String, dynamic> json) {
     return ConnectionConfig(
-      mode: ConnectionMode.values.byName(json['mode'] as String),
+      mode: ConnectionMode.values.byName(json['mode'] as String? ?? 'remote'),
       apiUrl: json['apiUrl'] as String?,
       apiKey: json['apiKey'] as String?,
       sshHost: json['sshHost'] as String?,

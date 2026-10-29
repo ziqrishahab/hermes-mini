@@ -8,6 +8,7 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.hermesmobile/accessibility"
+    private val SHELL_CHANNEL = "com.hermesmobile/shell"
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -74,6 +75,32 @@ class MainActivity : FlutterActivity() {
                 "readScreen" -> {
                     val elements = HermesAccessibilityService.readScreen()
                     result.success(elements)
+                }
+                else -> {
+                    result.notImplemented()
+                }
+            }
+        }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, SHELL_CHANNEL).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "getStatus" -> {
+                    result.success(PrivilegedShellBridge.getStatus(applicationContext))
+                }
+                "requestPermission" -> {
+                    PrivilegedShellBridge.requestPermission(this) { res ->
+                        result.success(res)
+                    }
+                }
+                "openManagerApp" -> {
+                    result.success(PrivilegedShellBridge.openManagerApp(this))
+                }
+                "executeCommand" -> {
+                    val command = call.argument<String>("command") ?: ""
+                    val timeoutMs = (call.argument<Number>("timeoutMs")?.toLong()) ?: 15_000L
+                    PrivilegedShellBridge.executeCommand(applicationContext, command, timeoutMs) { res ->
+                        result.success(res)
+                    }
                 }
                 else -> {
                     result.notImplemented()

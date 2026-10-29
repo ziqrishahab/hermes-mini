@@ -6,20 +6,22 @@ import "../../providers/connection_provider.dart";
 import "../../theme.dart";
 
 class SoulEditorScreen extends ConsumerStatefulWidget {
-  const SoulEditorScreen({super.key});
+  final String? profile;
+  const SoulEditorScreen({super.key, this.profile});
   @override
   ConsumerState<SoulEditorScreen> createState() => _SoulEditorScreenState();
 }
 
 class _SoulEditorScreenState extends ConsumerState<SoulEditorScreen> {
   late final TextEditingController _ctrl;
+  bool _loading = true;
   bool _dirty = false;
   bool _saving = false;
 
   @override
   void initState() {
     super.initState();
-    _ctrl = TextEditingController(text: _defaultSoul);
+    _ctrl = TextEditingController();
     _loadSoul();
   }
 
@@ -27,16 +29,19 @@ class _SoulEditorScreenState extends ConsumerState<SoulEditorScreen> {
     final conn = ref.read(connectionProvider).valueOrNull;
     if (conn != null) {
       try {
-        final content = await conn.readSoul();
-        if (content.isNotEmpty && mounted) {
+        final content = await conn.readSoul(profile: widget.profile);
+        if (mounted) {
           setState(() {
             _ctrl.text = content;
             _dirty = false;
+            _loading = false;
           });
+          return;
         }
-      } catch (e) {
-        // Keep default if loading fails
-      }
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() => _loading = false);
     }
   }
 
@@ -49,7 +54,7 @@ class _SoulEditorScreenState extends ConsumerState<SoulEditorScreen> {
 
     setState(() => _saving = true);
     try {
-      await conn.writeSoul(_ctrl.text);
+      await conn.writeSoul(_ctrl.text, profile: widget.profile);
       setState(() {
         _dirty = false;
         _saving = false;
@@ -79,27 +84,17 @@ class _SoulEditorScreenState extends ConsumerState<SoulEditorScreen> {
     super.dispose();
   }
 
-  static const _defaultSoul = """# Agent Personality
-Julian is a highly analytical executive assistant with a focus on precision and rapid execution. He prefers concise communication and proactive problem-solving.
-
-# Communication Style
-- Direct and concise
-- No sugarcoating
-- Uses casual language when appropriate
-- Technical depth when needed
-
-# Boundaries
-- No emoji or emoticons
-- No motivational speeches
-- Be honest when you don't know""";
-
   String _extractName(String text) {
     final match = RegExp(r'^#\s*(?:Agent\s+)?Personality\s*\n*(.+)', multiLine: true).firstMatch(text);
     if (match != null) {
       final name = match.group(1)?.trim() ?? '';
-      return name.split('\n').first.split(' ').first;
+      final firstToken = name.split('\n').first.split(' ').first.trim();
+      if (firstToken.isNotEmpty) return firstToken;
     }
-    return 'Agent';
+    if (widget.profile != null && widget.profile!.trim().isNotEmpty) {
+      return widget.profile!.trim();
+    }
+    return 'Default Agent';
   }
 
   @override
@@ -110,7 +105,7 @@ Julian is a highly analytical executive assistant with a focus on precision and 
         backgroundColor: HermesTokens.bgPrimary,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: HermesTokens.textPrimary),
+          icon: Icon(Icons.arrow_back, color: HermesTokens.textPrimary),
           onPressed: () {
             if (_dirty) {
               showDialog(
@@ -119,14 +114,14 @@ Julian is a highly analytical executive assistant with a focus on precision and 
                   backgroundColor: HermesTokens.bgElevated,
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(HermesTokens.radiusMd),
-                    side: const BorderSide(color: HermesTokens.borderBright),
+                    side: BorderSide(color: HermesTokens.borderBright),
                   ),
-                  title: const Text("Discard changes?", style: TextStyle(color: HermesTokens.textPrimary, fontSize: 16)),
-                  content: const Text("You have unsaved changes in the soul file.", style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13)),
+                  title: Text("Discard changes?", style: TextStyle(color: HermesTokens.textPrimary, fontSize: 16)),
+                  content: Text("You have unsaved changes in the soul file.", style: TextStyle(color: HermesTokens.textSecondary, fontSize: 13)),
                   actions: [
                     TextButton(
                       onPressed: () => Navigator.pop(ctx),
-                      child: const Text("Keep Editing", style: TextStyle(color: HermesTokens.textMuted)),
+                      child: Text("Keep Editing", style: TextStyle(color: HermesTokens.textMuted)),
                     ),
                     FilledButton(
                       style: FilledButton.styleFrom(
@@ -149,8 +144,8 @@ Julian is a highly analytical executive assistant with a focus on precision and 
             }
           },
         ),
-        title: const Text(
-          "Soul Configuration",
+        title: Text(
+          widget.profile != null ? "Soul (${widget.profile})" : "Soul Configuration",
           style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
       ),
@@ -166,7 +161,7 @@ Julian is a highly analytical executive assistant with a focus on precision and 
                     width: 48,
                     height: 48,
                     decoration: NeumorphicDecoration.raised(radius: 14),
-                    child: const Icon(
+                    child: Icon(
                       Icons.psychology_outlined,
                       size: 24,
                       color: HermesTokens.accent,
@@ -179,14 +174,14 @@ Julian is a highly analytical executive assistant with a focus on precision and 
                       children: [
                         Text(
                           _extractName(_ctrl.text),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 16,
                             fontWeight: FontWeight.w700,
                             color: HermesTokens.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 2),
-                        const Text(
+                        Text(
                           "Agent system prompt & personality guidelines",
                           style: TextStyle(
                             fontSize: 12,
@@ -199,9 +194,9 @@ Julian is a highly analytical executive assistant with a focus on precision and 
                 ],
               ),
             ),
-            const Divider(color: HermesTokens.divider, height: 1),
+            Divider(color: HermesTokens.divider, height: 1),
             // Section label
-            const Padding(
+            Padding(
               padding: EdgeInsets.fromLTRB(16, 12, 16, 8),
               child: Align(
                 alignment: Alignment.centerLeft,
@@ -219,31 +214,44 @@ Julian is a highly analytical executive assistant with a focus on precision and 
 
             // Editor
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Container(
-                  decoration: NeumorphicDecoration.recessed(radius: 16),
-                  child: TextField(
-                    controller: _ctrl,
-                    onChanged: (_) => setState(() => _dirty = true),
-                    maxLines: null,
-                    expands: true,
-                    textAlignVertical: TextAlignVertical.top,
-                    style: GoogleFonts.jetBrainsMono(
-                      color: HermesTokens.textPrimary,
-                      fontSize: 13,
-                      height: 1.6,
+              child: _loading
+                  ? Center(
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: HermesTokens.accent,
+                      ),
+                    )
+                  : Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      child: Container(
+                        decoration: NeumorphicDecoration.recessed(radius: 16),
+                        child: TextField(
+                          controller: _ctrl,
+                          onChanged: (_) => setState(() => _dirty = true),
+                          maxLines: null,
+                          expands: true,
+                          textAlignVertical: TextAlignVertical.top,
+                          style: GoogleFonts.jetBrainsMono(
+                            color: HermesTokens.textPrimary,
+                            fontSize: 13,
+                            height: 1.6,
+                          ),
+                          decoration: InputDecoration(
+                            contentPadding: const EdgeInsets.all(16),
+                            hintText: "# Agent Personality\nDefine system instructions, tone, and behavioral directives...",
+                            hintStyle: GoogleFonts.jetBrainsMono(
+                              color: HermesTokens.textMuted,
+                              fontSize: 13,
+                              height: 1.6,
+                            ),
+                            border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
+                            fillColor: Colors.transparent,
+                          ),
+                        ),
+                      ),
                     ),
-                    decoration: const InputDecoration(
-                      contentPadding: EdgeInsets.all(16),
-                      border: InputBorder.none,
-                      enabledBorder: InputBorder.none,
-                      focusedBorder: InputBorder.none,
-                      fillColor: Colors.transparent,
-                    ),
-                  ),
-                ),
-              ),
             ),
 
             // Save button

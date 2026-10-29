@@ -286,14 +286,14 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
               decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
               child: IconButton(
                 tooltip: "Back",
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
+                icon: Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
                 onPressed: () => context.pop(),
                 padding: EdgeInsets.zero,
               ),
             ),
           ),
         ),
-        title: const Text(
+        title: Text(
           "Achievements",
           style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: HermesTokens.textPrimary),
         ),
@@ -308,7 +308,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                 decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
                 child: IconButton(
                   tooltip: "Refresh achievements",
-                  icon: const Icon(Icons.refresh_rounded, color: HermesTokens.textSecondary, size: 18),
+                  icon: Icon(Icons.refresh_rounded, color: HermesTokens.textSecondary, size: 18),
                   onPressed: _fetchAchievements,
                   padding: EdgeInsets.zero,
                 ),
@@ -339,7 +339,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                           Text(
                             _error!,
                             textAlign: TextAlign.center,
-                            style: const TextStyle(fontSize: 12, color: HermesTokens.textSecondary),
+                            style: TextStyle(fontSize: 12, color: HermesTokens.textSecondary),
                           ),
                           const SizedBox(height: 16),
                           InkWell(
@@ -348,7 +348,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 9),
                               decoration: NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4),
-                              child: const Text(
+                              child: Text(
                                 "Retry",
                                 style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: HermesTokens.accent),
                               ),
@@ -370,7 +370,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                           margin: const EdgeInsets.only(bottom: 12),
                           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           decoration: NeumorphicDecoration.recessed(radius: 12),
-                          child: const Row(
+                          child: Row(
                             children: [
                               Icon(Icons.info_outline_rounded, size: 16, color: HermesTokens.accent),
                               SizedBox(width: 10),
@@ -397,7 +397,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                                 Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    const Text(
+                                    Text(
                                       "Overall Completion",
                                       style: TextStyle(
                                         fontSize: 14,
@@ -408,13 +408,13 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                                     const SizedBox(height: 2),
                                     Text(
                                       "$_unlockedCount of $_totalCount milestones unlocked",
-                                      style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                                      style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
                                     ),
                                   ],
                                 ),
                                 Text(
                                   "$progressPct%",
-                                  style: const TextStyle(
+                                  style: TextStyle(
                                     fontSize: 18,
                                     fontWeight: FontWeight.w800,
                                     color: HermesTokens.accent,
@@ -447,22 +447,24 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                       // Search bar
                       Container(
                         decoration: NeumorphicDecoration.recessed(radius: 12),
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
                         child: TextField(
                           controller: _searchCtrl,
-                          style: const TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
+                          style: TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
                           decoration: InputDecoration(
+                            filled: false,
                             border: InputBorder.none,
+                            enabledBorder: InputBorder.none,
+                            focusedBorder: InputBorder.none,
                             hintText: "Search milestones or categories...",
-                            hintStyle: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
-                            icon: const Icon(Icons.search_rounded, size: 18, color: HermesTokens.textMuted),
+                            hintStyle: TextStyle(fontSize: 13, color: HermesTokens.textMuted),
+                            contentPadding: const EdgeInsets.symmetric(vertical: 12),
                             suffixIcon: _searchQuery.isNotEmpty
                                 ? IconButton(
-                                    icon: const Icon(Icons.clear_rounded, size: 16, color: HermesTokens.textMuted),
+                                    icon: Icon(Icons.clear_rounded, size: 16, color: HermesTokens.textMuted),
                                     onPressed: () => _searchCtrl.clear(),
                                   )
                                 : null,
-                            isDense: true,
                           ),
                         ),
                       ),
@@ -512,10 +514,10 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                                   width: 44,
                                   height: 44,
                                   decoration: NeumorphicDecoration.recessed(radius: 12),
-                                  child: const Icon(Icons.filter_list_off_rounded, size: 20, color: HermesTokens.textMuted),
+                                  child: Icon(Icons.filter_list_off_rounded, size: 20, color: HermesTokens.textMuted),
                                 ),
                                 const SizedBox(height: 12),
-                                const Text(
+                                Text(
                                   "No achievements found matching filter",
                                   style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                                 ),
@@ -536,8 +538,8 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                           final tierName = _getTierName(tierVal);
 
                           // Progress metrics if available
-                          final progressCurrent = ach["progress_current"];
-                          final progressTarget = ach["progress_target"];
+                          final progressCurrent = ach["progress_current"] ?? ach["progress"];
+                          final progressTarget = ach["progress_target"] ?? ach["target"];
                           final hasProgress = !isUnlocked && progressCurrent is num && progressTarget is num && progressTarget > 0;
                           final fraction = hasProgress ? (progressCurrent / progressTarget).clamp(0.0, 1.0) : 0.0;
 
@@ -592,7 +594,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                                               decoration: NeumorphicDecoration.recessed(radius: 6),
                                               child: Text(
                                                 tierName,
-                                                style: const TextStyle(
+                                                style: TextStyle(
                                                   fontSize: 10,
                                                   fontWeight: FontWeight.w600,
                                                   color: HermesTokens.accent,
@@ -613,7 +615,7 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                                       const SizedBox(height: 4),
                                       Text(
                                         desc,
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                           fontSize: 11,
                                           color: HermesTokens.textMuted,
                                           height: 1.3,
@@ -624,13 +626,13 @@ class _AchievementsScreenState extends ConsumerState<AchievementsScreen> {
                                         children: [
                                           Text(
                                             category,
-                                            style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: HermesTokens.textMuted),
+                                            style: TextStyle(fontSize: 10, fontWeight: FontWeight.w500, color: HermesTokens.textMuted),
                                           ),
                                           if (hasProgress) ...[
                                             const Spacer(),
                                             Text(
                                               "$progressCurrent / $progressTarget",
-                                              style: const TextStyle(fontSize: 10, color: HermesTokens.textSecondary),
+                                              style: TextStyle(fontSize: 10, color: HermesTokens.textSecondary),
                                             ),
                                           ],
                                         ],

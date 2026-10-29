@@ -1,12 +1,30 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_highlight/flutter_highlight.dart';
 import 'package:flutter_highlight/themes/atom-one-dark.dart';
+import 'package:flutter_highlight/themes/atom-one-light.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../../models/chat_message.dart';
 import '../../services/hermes_connection.dart';
 import '../../theme.dart';
+
+enum VibeDiffLineType { context, added, removed, header }
+
+class VibeDiffLine {
+  final VibeDiffLineType type;
+  final int? oldLineNumber;
+  final int? newLineNumber;
+  final String content;
+
+  const VibeDiffLine({
+    required this.type,
+    this.oldLineNumber,
+    this.newLineNumber,
+    required this.content,
+  });
+}
 
 class VibeFileItem {
   final String id;
@@ -14,7 +32,11 @@ class VibeFileItem {
   final String path;
   final String language;
   final String content;
+  final String? previousContent;
   final String? toolOrigin;
+  final List<VibeDiffLine> diffLines;
+  final int addedCount;
+  final int removedCount;
 
   const VibeFileItem({
     required this.id,
@@ -22,8 +44,14 @@ class VibeFileItem {
     required this.path,
     required this.language,
     required this.content,
+    this.previousContent,
     this.toolOrigin,
+    this.diffLines = const [],
+    this.addedCount = 0,
+    this.removedCount = 0,
   });
+
+  bool get hasDiff => diffLines.isNotEmpty && (addedCount > 0 || removedCount > 0);
 }
 
 class VibeActivityItem {
@@ -47,6 +75,7 @@ class VibeActivityItem {
 class VibeModeView extends StatefulWidget {
   final List<ChatMessage> messages;
   final bool isGenerating;
+  final bool isActive;
   final void Function(String command)? onQuickPrompt;
   final String? activeCwd;
   final HermesConnection? connection;
@@ -55,6 +84,7 @@ class VibeModeView extends StatefulWidget {
     super.key,
     required this.messages,
     required this.isGenerating,
+    this.isActive = true,
     this.onQuickPrompt,
     this.activeCwd,
     this.connection,
@@ -66,618 +96,976 @@ class VibeModeView extends StatefulWidget {
 
 class _VibeModeViewState extends State<VibeModeView> {
   int _selectedFileIndex = 0;
-  bool _isTerminalExpanded = false;
+  bool _showDiffView = true;
+  bool _terminalExpanded = false;
+  int? _expandedActivityIdx;
   bool _copied = false;
 
-  List<VibeFileItem> _files = [];
+  List<VibeFileItem> _allFiles = [];
+  final Set<String> _closedTabIds = {};
+  final List<VibeFileItem> _manualReadFiles = [];
   List<VibeActivityItem> _activities = [];
-  final Set<int> _expandedActivityIndices = {};
-  List<Map<String, dynamic>> _remoteFiles = [];
-  bool _loadingRemoteFiles = false;
-  String? _loadingFilePath;
-  String? _resolvedCwd;
-  String? _currentExplorerSubpath;
-  DateTime? _clearedTerminalTimestamp;
 
-  bool _isActivityCleared(DateTime timestamp) {
-    if (_clearedTerminalTimestamp == null) return false;
-    return !timestamp.isAfter(_clearedTerminalTimestamp!);
-  }
+  bool _needsReparse = true;
+  DateTime _lastParseTime = DateTime.fromMillisecondsSinceEpoch(0);
+  Timer? _throttleTimer;
+
+  final ScrollController _codeVerticalScroll = ScrollController();
+  final ScrollController _diffVerticalScroll = ScrollController();
+
+  List<VibeFileItem> get _openFiles =>
+      _allFiles.where((f) => !_closedTabIds.contains(f.id)).toList();
 
   @override
   void initState() {
     super.initState();
-    _parseMessages();
-    _fetchWorkspaceFiles();
+    if (widget.isActive) {
+      _parseMessages();
+    } else {
+      _needsReparse = true;
+    }
   }
 
   @override
-  void didUpdateWidget(VibeModeView oldWidget) {
+  void dispose() {
+    _throttleTimer?.cancel();
+    _codeVerticalScroll.dispose();
+    _diffVerticalScroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant VibeModeView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final isNewSession = widget.messages.isNotEmpty &&
-        oldWidget.messages.isNotEmpty &&
-        widget.messages.first.id != oldWidget.messages.first.id;
-    if (isNewSession || widget.messages.isEmpty) {
-      _clearedTerminalTimestamp = null;
-    }
-    final messagesChanged = widget.messages.length != oldWidget.messages.length ||
-        (widget.messages.isNotEmpty && oldWidget.messages.isNotEmpty &&
+
+    final messagesChanged =
+        widget.messages.length != oldWidget.messages.length ||
+        (widget.messages.isNotEmpty &&
+            oldWidget.messages.isNotEmpty &&
             (widget.messages.last.content != oldWidget.messages.last.content ||
-             widget.messages.last.isStreaming != oldWidget.messages.last.isStreaming ||
-             widget.messages.last.toolOutput != oldWidget.messages.last.toolOutput));
-    if (messagesChanged || widget.isGenerating != oldWidget.isGenerating) {
+                widget.messages.last.toolOutput != oldWidget.messages.last.toolOutput ||
+                widget.messages.last.isStreaming != oldWidget.messages.last.isStreaming));
+
+    final generationFinished = oldWidget.isGenerating && !widget.isGenerating;
+
+    if (messagesChanged || generationFinished) {
+      _needsReparse = true;
+    }
+
+    if (!widget.isActive) {
+      return;
+    }
+
+    if (!oldWidget.isActive && widget.isActive && _needsReparse) {
+      _runParseNow();
+      return;
+    }
+
+    if (_needsReparse) {
+      if (generationFinished || !widget.isGenerating) {
+        _runParseNow();
+      } else {
+        final elapsed = DateTime.now().difference(_lastParseTime);
+        if (elapsed >= const Duration(milliseconds: 280)) {
+          _runParseNow();
+        } else if (_throttleTimer == null || !_throttleTimer!.isActive) {
+          _throttleTimer = Timer(
+            const Duration(milliseconds: 280) - elapsed,
+            () {
+              if (mounted && widget.isActive && _needsReparse) {
+                _runParseNow();
+              }
+            },
+          );
+        }
+      }
+    }
+  }
+
+  void _runParseNow() {
+    _throttleTimer?.cancel();
+    _lastParseTime = DateTime.now();
+    _needsReparse = false;
+    setState(() {
       _parseMessages();
+    });
+  }
+
+  void _resetScrollPositions() {
+    if (_codeVerticalScroll.hasClients) {
+      _codeVerticalScroll.jumpTo(0);
     }
-    if (widget.activeCwd != oldWidget.activeCwd || widget.connection != oldWidget.connection) {
-      _fetchWorkspaceFiles();
+    if (_diffVerticalScroll.hasClients) {
+      _diffVerticalScroll.jumpTo(0);
     }
   }
 
-  bool _isItemDir(Map<String, dynamic> item, String name) {
-    if (item['isDir'] == true ||
-        item['is_dir'] == true ||
-        item['is_dir'] == 1 ||
-        item['is_directory'] == true ||
-        item['isDirectory'] == true) {
-      return true;
-    }
-    final type = item['type']?.toString().toLowerCase();
-    if (type == 'dir' || type == 'directory' || type == 'folder' || type == 'd') {
-      return true;
-    }
-
-    final lower = name.toLowerCase();
-    if (lower == '.config' ||
-        lower == '.claude' ||
-        lower == '.claw' ||
-        lower == '.cline' ||
-        lower == '.codex' ||
-        lower == '.copilot' ||
-        lower == '.dbus-keyrings' ||
-        lower == 'electron-gyp' ||
-        lower == '.git' ||
-        lower == '.github' ||
-        lower == '.vscode' ||
-        lower == '.dart_tool' ||
-        lower == '.idea' ||
-        lower == 'lib' ||
-        lower == 'src' ||
-        lower == 'test' ||
-        lower == 'bin' ||
-        lower == 'build' ||
-        lower == 'assets' ||
-        lower == 'android' ||
-        lower == 'ios' ||
-        lower == 'web' ||
-        lower == 'windows' ||
-        lower == 'linux' ||
-        lower == 'macos') {
-      return true;
-    }
-
-    if (!name.contains('.')) return true;
-
-    final parts = name.split('.');
-    if (name.startsWith('.') && parts.length == 2) {
-      const knownFileExts = {
-        'json', 'yaml', 'yml', 'dart', 'py', 'js', 'ts', 'md', 'txt', 'html', 'css', 'sh', 'lock', 'env', 'gitignore', 'conf', 'cfg', 'ini', 'xml'
-      };
-      if (!knownFileExts.contains(parts[1].toLowerCase())) {
-        return true;
-      }
-    }
-
-    return false;
+  void _selectFileTab(int index) {
+    final open = _openFiles;
+    if (index < 0 || index >= open.length) return;
+    if (_selectedFileIndex == index) return;
+    setState(() {
+      _selectedFileIndex = index;
+      final selected = open[index];
+      _showDiffView = selected.hasDiff;
+    });
+    _resetScrollPositions();
   }
 
-  String? _getParentPath(String path) {
-    final sep = path.contains('\\') ? '\\' : '/';
-    final parts = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).toList();
-    if (parts.length <= 1) return null;
-    parts.removeLast();
-    if (path.startsWith(sep)) {
-      return '$sep${parts.join(sep)}';
-    }
-    if (path.length >= 2 && path[1] == ':') {
-      if (parts.length == 1) return '${parts.first}\\';
-      return parts.join('\\');
-    }
-    return parts.join(sep);
+  void _closeFileTab(String id) {
+    setState(() {
+      _closedTabIds.add(id);
+      final open = _openFiles;
+      if (_selectedFileIndex >= open.length) {
+        _selectedFileIndex = open.isEmpty ? 0 : open.length - 1;
+      }
+    });
+    _resetScrollPositions();
   }
 
-  Future<void> _fetchWorkspaceFiles({String? subpath}) async {
-    if (widget.connection == null) return;
-    setState(() => _loadingRemoteFiles = true);
-    try {
-      final cwd = widget.activeCwd ?? await widget.connection!.getActiveWorkspaceCwd();
-      if (cwd != null && cwd.isNotEmpty && mounted) {
-        setState(() => _resolvedCwd = cwd);
+  void _reopenOrSelectFile(VibeFileItem item) {
+    setState(() {
+      _closedTabIds.remove(item.id);
+      final open = _openFiles;
+      final idx = open.indexWhere((f) => f.id == item.id);
+      if (idx != -1) {
+        _selectedFileIndex = idx;
+        _showDiffView = open[idx].hasDiff;
       }
-      final items = await widget.connection!.listWorkspaceFiles(subpath: subpath);
-      if (mounted) {
-        setState(() {
-          _currentExplorerSubpath = subpath;
-          _remoteFiles = items;
-          _loadingRemoteFiles = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _loadingRemoteFiles = false);
-    }
-  }
-
-  Future<void> _openRemoteFile(String path, BuildContext modalCtx) async {
-    final fileName = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).last;
-    final existingIdx = _files.indexWhere((f) => f.path == path || f.name == fileName);
-    if (existingIdx != -1) {
-      setState(() => _selectedFileIndex = existingIdx);
-      if (Navigator.canPop(modalCtx)) Navigator.pop(modalCtx);
-      return;
-    }
-
-    if (widget.connection == null) return;
-
-    setState(() => _loadingFilePath = path);
-    try {
-      final content = await widget.connection!.readWorkspaceFile(path);
-      if (content != null && content.isNotEmpty && mounted) {
-        final newFile = VibeFileItem(
-          id: 'remote_$path',
-          name: fileName,
-          path: path,
-          language: _detectLanguage(fileName),
-          content: content,
-          toolOrigin: 'Remote Workspace',
-        );
-
-        setState(() {
-          _files.insert(0, newFile);
-          _selectedFileIndex = 0;
-          _loadingFilePath = null;
-        });
-
-        HapticFeedback.lightImpact();
-        if (modalCtx.mounted && Navigator.canPop(modalCtx)) Navigator.pop(modalCtx);
-        return;
-      }
-    } catch (e) {
-      debugPrint("Error opening remote file: $e");
-    }
-
-    // If reading failed because it is a directory, navigate into it smoothly
-    if (_isItemDir({'path': path}, fileName)) {
-      if (mounted) {
-        setState(() => _loadingFilePath = null);
-        await _fetchWorkspaceFiles(subpath: path);
-      }
-      return;
-    }
-
-    if (mounted) {
-      setState(() => _loadingFilePath = null);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text("Failed to read file: $path"),
-          backgroundColor: HermesTokens.error,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-    }
+    });
+    _resetScrollPositions();
   }
 
   void _parseMessages() {
     final filesMap = <String, VibeFileItem>{};
-    final activities = <VibeActivityItem>[];
+    final activitiesList = <VibeActivityItem>[];
+    int globalSnippetIdx = 1;
+
+    final toolRegex = RegExp(
+      r'<(?:tool_call|tool_use|function_call|tool)\b[^>]*>([\s\S]*?)<\/(?:tool_call|tool_use|function_call|tool)>',
+      caseSensitive: false,
+    );
+    final thinkRegex = RegExp(
+      r'<(?:think|thinking)>([\s\S]*?)(?:<\/(?:think|thinking)>|$)',
+      caseSensitive: false,
+    );
+    final codeRegex = RegExp(r'```([^\n`]*)\n([\s\S]*?)(?:```|$)');
+
+    void upsertFile({
+      required String key,
+      required String name,
+      required String path,
+      required String language,
+      required String content,
+      String? explicitPreviousContent,
+      String? rawDiffText,
+      String? toolOrigin,
+      bool isModificationOrCreation = false,
+    }) {
+      final existing = filesMap[key];
+      final prevContent = explicitPreviousContent ?? existing?.content;
+
+      List<VibeDiffLine> diffLines = const [];
+      int added = 0;
+      int removed = 0;
+
+      if (rawDiffText != null && rawDiffText.trim().isNotEmpty) {
+        final parsed = _parseUnifiedDiff(rawDiffText);
+        diffLines = parsed.$1;
+        added = parsed.$2;
+        removed = parsed.$3;
+      } else if (prevContent != null && prevContent != content) {
+        final computed = _computeLineDiff(prevContent, content);
+        diffLines = computed.$1;
+        added = computed.$2;
+        removed = computed.$3;
+      } else if (isModificationOrCreation && prevContent == null) {
+        final created = _computeCreatedDiff(content);
+        diffLines = created.$1;
+        added = created.$2;
+        removed = 0;
+      } else if (existing != null && existing.hasDiff && prevContent == content) {
+        diffLines = existing.diffLines;
+        added = existing.addedCount;
+        removed = existing.removedCount;
+      }
+
+      filesMap[key] = VibeFileItem(
+        id: key,
+        name: name,
+        path: path,
+        language: language,
+        content: content,
+        previousContent: prevContent,
+        toolOrigin: toolOrigin ?? existing?.toolOrigin,
+        diffLines: diffLines,
+        addedCount: added,
+        removedCount: removed,
+      );
+    }
 
     for (int i = 0; i < widget.messages.length; i++) {
       final msg = widget.messages[i];
 
-      // 1. Tool Call Message or Explicit Tool Properties
-      if (msg.toolName != null && msg.toolName!.isNotEmpty) {
-        final out = (msg.toolOutput != null && msg.toolOutput!.isNotEmpty)
-            ? msg.toolOutput!
-            : (msg.role == MessageRole.tool ? msg.content : '');
-        _processToolCall(
-          name: msg.toolName!,
-          input: msg.toolInput ?? '',
-          output: out,
-          status: msg.toolStatus,
+      if (msg.role == MessageRole.tool ||
+          (msg.toolName != null && msg.toolName!.isNotEmpty)) {
+        final tName = msg.toolName ?? 'tool_execution';
+        final tInput = msg.toolInput ?? msg.content;
+        final tOutput = msg.toolOutput;
+        final isErr = msg.toolStatus == 'error';
+
+        _extractFromTool(
+          name: tName,
+          inputRaw: tInput,
+          outputRaw: tOutput,
           timestamp: msg.timestamp,
-          sourceIndex: i,
+          isSuccess: !isErr,
           filesMap: filesMap,
-          activities: activities,
+          upsertFile: upsertFile,
+          activitiesList: activitiesList,
         );
-      } else if (msg.role == MessageRole.tool) {
-        // Fallback for standalone tool role message without toolName
-        if (!_isActivityCleared(msg.timestamp)) {
-          final toolName = msg.toolName ?? 'tool';
-          final cleanOut = _cleanToolOutput(msg.content);
-          activities.add(VibeActivityItem(
-            title: toolName,
-            type: 'tool',
-            detail: null,
-            output: cleanOut.isNotEmpty ? cleanOut : null,
-            timestamp: msg.timestamp,
-            isSuccess: !(msg.toolStatus == 'error'),
-          ));
-        }
       }
 
-      // 3. Embedded XML Tool Calls in message content (<tool_call...> or <tool...>)
-      if (msg.content.contains('<tool') || msg.content.contains('<tool_call')) {
-        final toolRegex = RegExp(
-          r'<(?:tool_call|tool)(?:\s+name="([^"]+)")?>([\s\S]*?)(?:<\/(?:tool_call|tool)>|$)',
-          caseSensitive: false,
-        );
-        for (final m in toolRegex.allMatches(msg.content)) {
-          final nameAttr = m.group(1);
-          final body = m.group(2)?.trim() ?? '';
-          final nameMatch = RegExp(r'<name>([^<]+)<\/name>').firstMatch(body);
-          final rawToolName = nameAttr ?? nameMatch?.group(1)?.trim() ?? 'tool';
-          final argMatch = RegExp(r'<arguments>([\s\S]*?)<\/arguments>').firstMatch(body);
-          final outMatch = RegExp(r'<(?:output|result)>([\s\S]*?)<\/(?:output|result)>').firstMatch(body);
-          final toolInput = argMatch?.group(1)?.trim() ?? (nameAttr != null ? body : '');
-          final toolOutput = outMatch?.group(1)?.trim() ?? '';
-
-          _processToolCall(
-            name: rawToolName,
-            input: toolInput,
-            output: toolOutput,
-            status: 'completed',
-            timestamp: msg.timestamp,
-            sourceIndex: i,
-            filesMap: filesMap,
-            activities: activities,
+      if (msg.role == MessageRole.reasoning) {
+        if (msg.content.trim().isNotEmpty) {
+          activitiesList.add(
+            VibeActivityItem(
+              title: 'Agent reasoning',
+              type: 'reasoning',
+              detail: _summarizeReasoning(msg.content),
+              output: msg.content.trim(),
+              timestamp: msg.timestamp,
+            ),
           );
         }
+        continue;
       }
 
-      // 4. Thought / Reasoning Process (<think>...</think> or <thinking>...</thinking>)
-      if (!_isActivityCleared(msg.timestamp) && (msg.content.contains('<think') || msg.content.contains('<thinking'))) {
-        final thinkRegex = RegExp(
-          r'<(?:think|thinking)>([\s\S]*?)(?:<\/(?:think|thinking)>|$)',
-          caseSensitive: false,
-        );
-        for (final m in thinkRegex.allMatches(msg.content)) {
-          String thought = m.group(1)?.trim() ?? '';
+      if (msg.role == MessageRole.assistant) {
+        final raw = msg.content;
+
+        for (final m in thinkRegex.allMatches(raw)) {
+          final thought = m.group(1)?.trim() ?? '';
           if (thought.isNotEmpty) {
-            final tickerRegex = RegExp(r'[(\[（][^)\]）\n]*?[)\]）]\s*(?:contemplating|reasoning|brainstorming|reflecting|ruminating|cogitating|formulating|thinking)\.{3}\s*', caseSensitive: false);
-            thought = thought.replaceAll(tickerRegex, '').trim();
-            if (thought.isNotEmpty) {
-              final firstLine = thought.split('\n').firstWhere((l) => l.trim().isNotEmpty, orElse: () => 'Reasoning');
-              final preview = firstLine.length > 80 ? '${firstLine.substring(0, 80)}...' : firstLine;
-              activities.add(VibeActivityItem(
-                title: 'Thought Process',
-                type: 'thought',
-                detail: preview,
+            activitiesList.add(
+              VibeActivityItem(
+                title: 'Thinking process',
+                type: 'reasoning',
+                detail: _summarizeReasoning(thought),
                 output: thought,
                 timestamp: msg.timestamp,
-                isSuccess: true,
-              ));
-            }
+              ),
+            );
           }
         }
-      }
 
-      // 5. Parse Markdown Code Blocks in Assistant Messages
-      if (msg.role == MessageRole.assistant) {
-        final codeRegex = RegExp(r'```(\w+)?\r?\n([\s\S]*?)```', multiLine: true);
-        final matches = codeRegex.allMatches(msg.content);
-
-        int snippetIdx = 1;
-        for (final m in matches) {
-          final lang = (m.group(1) ?? 'dart').trim().toLowerCase();
-          final code = (m.group(2) ?? '').trim();
-
-          if (code.isEmpty) continue;
-
-          // If it's a bash/shell command block, add to terminal activity
-          if (lang == 'bash' || lang == 'sh' || lang == 'shell' || lang == 'cmd' || lang == 'powershell' || lang == 'zsh') {
-            if (!_isActivityCleared(msg.timestamp)) {
-              final lines = code.split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty && !l.startsWith('#')).toList();
-              for (final cmdLine in lines) {
-                activities.add(VibeActivityItem(
-                  title: 'terminal',
-                  type: 'command',
-                  detail: cmdLine.startsWith('\$') ? cmdLine : '\$ $cmdLine',
-                  output: null,
-                  timestamp: msg.timestamp,
-                  isSuccess: true,
-                ));
+        for (final m in toolRegex.allMatches(raw)) {
+          final inner = m.group(1)?.trim() ?? '';
+          if (inner.isNotEmpty) {
+            String toolName = 'tool_call';
+            String toolInput = inner;
+            try {
+              final decoded = jsonDecode(inner);
+              if (decoded is Map) {
+                toolName = (decoded['name'] ?? decoded['tool'] ?? 'tool_call')
+                    .toString();
+                if (decoded['arguments'] != null) {
+                  toolInput = decoded['arguments'] is String
+                      ? decoded['arguments'] as String
+                      : const JsonEncoder.withIndent('  ')
+                            .convert(decoded['arguments']);
+                } else if (decoded['input'] != null) {
+                  toolInput = decoded['input'] is String
+                      ? decoded['input'] as String
+                      : const JsonEncoder.withIndent('  ')
+                            .convert(decoded['input']);
+                }
               }
-            }
-            continue;
+            } catch (_) {}
+
+            _extractFromTool(
+              name: toolName,
+              inputRaw: toolInput,
+              outputRaw: null,
+              timestamp: msg.timestamp,
+              isSuccess: true,
+              filesMap: filesMap,
+              upsertFile: upsertFile,
+              activitiesList: activitiesList,
+            );
+          }
+        }
+
+        final cleanedForCode = raw
+            .replaceAll(thinkRegex, '')
+            .replaceAll(toolRegex, '');
+
+        for (final m in codeRegex.allMatches(cleanedForCode)) {
+          final header = (m.group(1) ?? '').trim();
+          final codeBody = (m.group(2) ?? '').trimRight();
+          if (codeBody.trim().isEmpty) continue;
+
+          final parsedHeader = _parseCodeBlockHeader(
+            header,
+            codeBody,
+            globalSnippetIdx,
+            cleanedForCode.substring(0, m.start),
+          );
+          final lang = parsedHeader.$1;
+          final filePath = parsedHeader.$2;
+          final fileName = parsedHeader.$3;
+          final isNamedFile = parsedHeader.$4;
+
+          if (!isNamedFile) {
+            globalSnippetIdx++;
           }
 
-          String detectedName = _extractFileNameFromCode(code, lang, snippetIdx);
-          String filePath = detectedName;
+          if (lang == 'bash' ||
+              lang == 'sh' ||
+              lang == 'shell' ||
+              lang == 'zsh' ||
+              lang == 'powershell' ||
+              lang == 'console') {
+            if (!filePath.contains('.')) {
+              final firstLine = codeBody.split('\n').first.trim();
+              activitiesList.add(
+                VibeActivityItem(
+                  title: firstLine.length > 60
+                      ? '${firstLine.substring(0, 60)}...'
+                      : firstLine,
+                  type: 'command',
+                  detail: 'Shell snippet',
+                  output: codeBody,
+                  timestamp: msg.timestamp,
+                ),
+              );
+              continue;
+            }
+          }
 
-          final key = 'md_${detectedName}_$snippetIdx';
-          filesMap[key] = VibeFileItem(
-            id: key,
-            name: detectedName,
-            path: filePath,
-            language: lang.isEmpty ? 'dart' : lang,
-            content: code,
-            toolOrigin: 'Hermes Assistant',
-          );
-          snippetIdx++;
+          final isUnifiedDiff =
+              lang == 'diff' ||
+              lang == 'patch' ||
+              codeBody.startsWith('diff --git ') ||
+              codeBody.startsWith('--- ') ||
+              codeBody.startsWith('@@ ');
+
+          final key = isNamedFile ? filePath : 'snippet_$globalSnippetIdx';
+
+          if (isUnifiedDiff) {
+            final cleanContent = _reconstructContentFromDiff(codeBody);
+            upsertFile(
+              key: key,
+              name: fileName,
+              path: filePath,
+              language: _inferLanguage(fileName, fallback: 'diff'),
+              content: cleanContent,
+              rawDiffText: codeBody,
+              toolOrigin: 'diff',
+              isModificationOrCreation: true,
+            );
+          } else {
+            upsertFile(
+              key: key,
+              name: fileName,
+              path: filePath,
+              language: lang,
+              content: codeBody,
+              toolOrigin: isNamedFile ? 'modified' : 'snippet',
+              isModificationOrCreation: isNamedFile,
+            );
+          }
         }
       }
     }
 
-    // 6. Active Live Running Indicator when isGenerating is true
-    if (widget.isGenerating) {
-      activities.add(VibeActivityItem(
-        title: 'Hermes Agent Active',
-        type: 'running',
-        detail: 'Executing instructions and analyzing workspace...',
-        output: null,
-        timestamp: DateTime.now(),
-        isSuccess: true,
-      ));
+    for (final manual in _manualReadFiles) {
+      filesMap.putIfAbsent(manual.id, () => manual);
     }
 
-    final parsedFiles = filesMap.values.toList();
-    // Preserve remote files that were opened manually by the user
-    final remoteFiles = _files.where((f) => f.id.startsWith('remote_')).toList();
-    for (final rf in remoteFiles) {
-      if (!parsedFiles.any((pf) => pf.path == rf.path || pf.id == rf.id)) {
-        parsedFiles.add(rf);
-      }
+    _allFiles = filesMap.values.toList();
+    _activities = activitiesList.reversed.toList();
+
+    final open = _openFiles;
+    if (_selectedFileIndex >= open.length) {
+      _selectedFileIndex = open.isEmpty ? 0 : open.length - 1;
     }
-
-    setState(() {
-      _files = parsedFiles;
-      _activities = activities.reversed.toList();
-      if (_selectedFileIndex >= _files.length) {
-        _selectedFileIndex = _files.isNotEmpty ? _files.length - 1 : 0;
-      }
-    });
   }
 
-  String _cleanToolInput(String name, String input) {
-    if (input.trim().isEmpty) return '';
-    try {
-      final decoded = jsonDecode(input);
-      if (decoded is Map) {
-        if (decoded.containsKey('CommandLine') && decoded['CommandLine'] != null) {
-          final cmd = decoded['CommandLine'].toString().trim();
-          return cmd.startsWith('\$') ? cmd : '\$ $cmd';
-        }
-        if (decoded.containsKey('command') && decoded['command'] != null) {
-          final cmd = decoded['command'].toString().trim();
-          return cmd.startsWith('\$') ? cmd : '\$ $cmd';
-        }
-        if (decoded.containsKey('cmd') && decoded['cmd'] != null) {
-          final cmd = decoded['cmd'].toString().trim();
-          return cmd.startsWith('\$') ? cmd : '\$ $cmd';
-        }
-        if (decoded.containsKey('TargetFile') && decoded['TargetFile'] != null) {
-          return decoded['TargetFile'].toString();
-        }
-        if (decoded.containsKey('path') && decoded['path'] != null) {
-          return decoded['path'].toString();
-        }
-        if (decoded.containsKey('query') && decoded['query'] != null) {
-          return decoded['query'].toString();
-        }
-        const encoder = JsonEncoder.withIndent('  ');
-        return encoder.convert(decoded);
-      }
-    } catch (_) {}
-    return input.trim();
-  }
-
-  String _cleanToolOutput(String raw) {
-    if (raw.trim().isEmpty) return '';
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is Map) {
-        if (decoded.containsKey('output') && decoded['output'] != null) {
-          return decoded['output'].toString();
-        }
-        if (decoded.containsKey('result') && decoded['result'] != null) {
-          return decoded['result'].toString();
-        }
-        const encoder = JsonEncoder.withIndent('  ');
-        return encoder.convert(decoded);
-      } else if (decoded is List) {
-        const encoder = JsonEncoder.withIndent('  ');
-        return encoder.convert(decoded);
-      }
-    } catch (_) {}
-    return raw;
-  }
-
-  void _processToolCall({
+  void _extractFromTool({
     required String name,
-    required String input,
-    required String output,
-    String? status,
+    required String inputRaw,
+    required String? outputRaw,
     required DateTime timestamp,
-    required int sourceIndex,
+    required bool isSuccess,
     required Map<String, VibeFileItem> filesMap,
-    required List<VibeActivityItem> activities,
+    required void Function({
+      required String key,
+      required String name,
+      required String path,
+      required String language,
+      required String content,
+      String? explicitPreviousContent,
+      String? rawDiffText,
+      String? toolOrigin,
+      bool isModificationOrCreation,
+    }) upsertFile,
+    required List<VibeActivityItem> activitiesList,
   }) {
-    if (_isActivityCleared(timestamp)) return;
+    final lowerName = name.toLowerCase();
+    Map<String, dynamic>? args;
+    try {
+      final decoded = jsonDecode(inputRaw);
+      if (decoded is Map<String, dynamic>) {
+        args = decoded;
+      } else if (decoded is Map) {
+        args = Map<String, dynamic>.from(decoded);
+      }
+    } catch (_) {}
 
-    final lower = name.toLowerCase();
-    final isSuccess = !(status?.toLowerCase() == 'error');
+    if (lowerName.contains('terminal') ||
+        lowerName.contains('bash') ||
+        lowerName.contains('exec') ||
+        lowerName.contains('shell') ||
+        lowerName == 'run_command') {
+      final cmd =
+          args?['command']?.toString() ??
+          args?['cmd']?.toString() ??
+          args?['script']?.toString() ??
+          inputRaw.trim();
+      activitiesList.add(
+        VibeActivityItem(
+          title: cmd.split('\n').first,
+          type: isSuccess ? 'command' : 'error',
+          detail: name,
+          output: (outputRaw != null && outputRaw.trim().isNotEmpty)
+              ? outputRaw
+              : cmd,
+          timestamp: timestamp,
+          isSuccess: isSuccess,
+        ),
+      );
+      return;
+    }
 
-    if (lower.contains('write') || lower.contains('edit') || lower.contains('replace') || lower.contains('create')) {
-      String? extractedPath;
-      String? extractedCode;
+    if (lowerName.contains('write') ||
+        lowerName.contains('create') ||
+        lowerName.contains('patch') ||
+        lowerName.contains('edit') ||
+        lowerName.contains('replace')) {
+      final path =
+          args?['path']?.toString() ??
+          args?['file_path']?.toString() ??
+          args?['filepath']?.toString() ??
+          args?['target_file']?.toString() ??
+          args?['filename']?.toString();
 
-      try {
-        final decoded = jsonDecode(input);
-        if (decoded is Map) {
-          extractedPath = decoded['TargetFile']?.toString() ??
-              decoded['path']?.toString() ??
-              decoded['file']?.toString() ??
-              decoded['filename']?.toString();
+      final content =
+          args?['content']?.toString() ??
+          args?['file_text']?.toString() ??
+          args?['new_str']?.toString() ??
+          args?['new_string']?.toString() ??
+          args?['replacement']?.toString() ??
+          args?['new_text']?.toString() ??
+          args?['code']?.toString();
 
-          extractedCode = decoded['CodeContent']?.toString() ??
-              decoded['ReplacementContent']?.toString() ??
-              decoded['content']?.toString();
+      final oldText =
+          args?['old_str']?.toString() ??
+          args?['old_string']?.toString() ??
+          args?['target']?.toString() ??
+          args?['old_text']?.toString() ??
+          args?['search']?.toString();
+
+      final diffPatch =
+          args?['diff']?.toString() ??
+          args?['patch']?.toString();
+
+      if (path != null && path.isNotEmpty) {
+        final shortName = path.split(RegExp(r'[/\\]')).last;
+        final existing = filesMap[path];
+
+        if (diffPatch != null && diffPatch.trim().isNotEmpty) {
+          final reconstructed = _reconstructContentFromDiff(diffPatch);
+          upsertFile(
+            key: path,
+            name: shortName,
+            path: path,
+            language: _inferLanguage(shortName),
+            content: reconstructed,
+            rawDiffText: diffPatch,
+            toolOrigin: name,
+            isModificationOrCreation: true,
+          );
+        } else if (oldText != null && content != null) {
+          String prev = oldText;
+          String next = content;
+          if (existing != null && existing.content.contains(oldText)) {
+            prev = existing.content;
+            next = existing.content.replaceFirst(oldText, content);
+          }
+          upsertFile(
+            key: path,
+            name: shortName,
+            path: path,
+            language: _inferLanguage(shortName),
+            content: next,
+            explicitPreviousContent: prev,
+            toolOrigin: name,
+            isModificationOrCreation: true,
+          );
+        } else if (content != null && content.isNotEmpty) {
+          upsertFile(
+            key: path,
+            name: shortName,
+            path: path,
+            language: _inferLanguage(shortName),
+            content: content,
+            toolOrigin: name,
+            isModificationOrCreation: true,
+          );
         }
-      } catch (_) {
-        final fileMatch = RegExp(r'''["']?(?:TargetFile|path|file)["']?\s*:\s*["']([^"']+)["']''').firstMatch(input);
-        if (fileMatch != null) extractedPath = fileMatch.group(1);
       }
 
-      if (extractedPath != null && extractedCode != null && extractedCode.trim().isNotEmpty) {
-        final fileName = extractedPath.split(RegExp(r'[\\/]')).last;
-        final lang = _detectLanguage(fileName);
-        filesMap[extractedPath] = VibeFileItem(
-          id: 'tool_${sourceIndex}_$fileName',
-          name: fileName,
-          path: extractedPath,
-          language: lang,
-          content: extractedCode,
-          toolOrigin: name,
-        );
+      activitiesList.add(
+        VibeActivityItem(
+          title: path != null ? '$name: $path' : name,
+          type: isSuccess ? 'tool' : 'error',
+          detail: 'File change',
+          output: outputRaw ?? inputRaw,
+          timestamp: timestamp,
+          isSuccess: isSuccess,
+        ),
+      );
+      return;
+    }
+
+    if (lowerName.contains('read_file') || lowerName.contains('view_file')) {
+      final path =
+          args?['path']?.toString() ??
+          args?['file_path']?.toString() ??
+          args?['filepath']?.toString();
+      if (path != null &&
+          path.isNotEmpty &&
+          outputRaw != null &&
+          outputRaw.trim().isNotEmpty) {
+        final shortName = path.split(RegExp(r'[/\\]')).last;
+        if (!filesMap.containsKey(path)) {
+          upsertFile(
+            key: path,
+            name: shortName,
+            path: path,
+            language: _inferLanguage(shortName),
+            content: outputRaw,
+            toolOrigin: name,
+            isModificationOrCreation: false,
+          );
+        }
       }
+      activitiesList.add(
+        VibeActivityItem(
+          title: path != null ? 'Read $path' : name,
+          type: 'tool',
+          detail: 'File inspection',
+          output: outputRaw ?? inputRaw,
+          timestamp: timestamp,
+          isSuccess: isSuccess,
+        ),
+      );
+      return;
+    }
 
-      final cleanDetail = extractedPath ?? _cleanToolInput(name, input);
-      final cleanOut = _cleanToolOutput(output);
-
-      final existingIdx = activities.indexWhere((a) =>
-          a.title == name &&
-          (cleanDetail.isEmpty || a.detail == cleanDetail) &&
-          (a.timestamp.difference(timestamp).abs().inSeconds < 10));
-
-      if (existingIdx != -1) {
-        final existing = activities[existingIdx];
-        activities[existingIdx] = VibeActivityItem(
-          title: existing.title,
-          type: existing.type,
-          detail: existing.detail ?? (cleanDetail.isNotEmpty ? cleanDetail : null),
-          output: cleanOut.isNotEmpty ? cleanOut : existing.output,
-          timestamp: existing.timestamp,
-          isSuccess: isSuccess && existing.isSuccess,
-        );
-        return;
-      }
-
-      activities.add(VibeActivityItem(
+    activitiesList.add(
+      VibeActivityItem(
         title: name,
-        type: 'file',
-        detail: cleanDetail.isNotEmpty ? cleanDetail : null,
-        output: cleanOut.isNotEmpty ? cleanOut : null,
+        type: isSuccess ? 'tool' : 'error',
+        detail: args != null && args.isNotEmpty
+            ? args.entries
+                  .take(2)
+                  .map((e) => '${e.key}: ${e.value}')
+                  .join(', ')
+            : null,
+        output: outputRaw ?? inputRaw,
         timestamp: timestamp,
         isSuccess: isSuccess,
-      ));
-    } else if (lower.contains('run_command') || lower.contains('bash') || lower.contains('terminal') || lower.contains('exec') || lower.contains('sh')) {
-      final cleanCmd = _cleanToolInput(name, input);
-      final cleanOut = _cleanToolOutput(output);
+      ),
+    );
+  }
 
-      final existingIdx = activities.indexWhere((a) =>
-          (a.title == name || a.type == 'command') &&
-          (cleanCmd.isEmpty || a.detail == cleanCmd) &&
-          (a.timestamp.difference(timestamp).abs().inSeconds < 10));
+  /// Parses unified diff text into `VibeDiffLine` list and `(added, removed)` counts.
+  (List<VibeDiffLine>, int, int) _parseUnifiedDiff(String rawDiff) {
+    final lines = rawDiff.split('\n');
+    final result = <VibeDiffLine>[];
+    int added = 0;
+    int removed = 0;
+    int oldLine = 1;
+    int newLine = 1;
+    final hunkRegex = RegExp(r'^@@\s*-(\d+)(?:,\d+)?\s*\+(\d+)(?:,\d+)?\s*@@');
 
-      if (existingIdx != -1) {
-        final existing = activities[existingIdx];
-        activities[existingIdx] = VibeActivityItem(
-          title: existing.title,
-          type: 'command',
-          detail: existing.detail ?? (cleanCmd.isNotEmpty ? cleanCmd : null),
-          output: cleanOut.isNotEmpty ? cleanOut : existing.output,
-          timestamp: existing.timestamp,
-          isSuccess: isSuccess && existing.isSuccess,
+    for (final line in lines) {
+      if (line.startsWith('diff --git ') ||
+          line.startsWith('index ') ||
+          line.startsWith('--- ') ||
+          line.startsWith('+++ ')) {
+        continue;
+      }
+      final hunkMatch = hunkRegex.firstMatch(line);
+      if (hunkMatch != null) {
+        oldLine = int.tryParse(hunkMatch.group(1) ?? '1') ?? 1;
+        newLine = int.tryParse(hunkMatch.group(2) ?? '1') ?? 1;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.header,
+            content: line,
+          ),
         );
-        return;
+        continue;
+      }
+      if (line.startsWith('+')) {
+        added++;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.added,
+            newLineNumber: newLine++,
+            content: line.substring(1),
+          ),
+        );
+      } else if (line.startsWith('-')) {
+        removed++;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.removed,
+            oldLineNumber: oldLine++,
+            content: line.substring(1),
+          ),
+        );
+      } else {
+        final clean = line.startsWith(' ') ? line.substring(1) : line;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.context,
+            oldLineNumber: oldLine++,
+            newLineNumber: newLine++,
+            content: clean,
+          ),
+        );
+      }
+    }
+    return (result, added, removed);
+  }
+
+  String _reconstructContentFromDiff(String rawDiff) {
+    final lines = rawDiff.split('\n');
+    final buffer = <String>[];
+    for (final line in lines) {
+      if (line.startsWith('diff --git ') ||
+          line.startsWith('index ') ||
+          line.startsWith('--- ') ||
+          line.startsWith('+++ ') ||
+          line.startsWith('@@ ')) {
+        continue;
+      }
+      if (line.startsWith('-')) continue;
+      if (line.startsWith('+')) {
+        buffer.add(line.substring(1));
+      } else if (line.startsWith(' ')) {
+        buffer.add(line.substring(1));
+      } else {
+        buffer.add(line);
+      }
+    }
+    return buffer.join('\n');
+  }
+
+  (List<VibeDiffLine>, int) _computeCreatedDiff(String content) {
+    final lines = content.split('\n');
+    final diff = <VibeDiffLine>[];
+    for (int i = 0; i < lines.length; i++) {
+      diff.add(
+        VibeDiffLine(
+          type: VibeDiffLineType.added,
+          newLineNumber: i + 1,
+          content: lines[i],
+        ),
+      );
+    }
+    return (diff, lines.length);
+  }
+
+  /// Computes a line-by-line LCS diff between `oldText` and `newText`.
+  (List<VibeDiffLine>, int, int) _computeLineDiff(String oldText, String newText) {
+    final oldLines = oldText.split('\n');
+    final newLines = newText.split('\n');
+
+    // Trim common prefix and suffix to keep matrix small and fast
+    int start = 0;
+    while (start < oldLines.length &&
+        start < newLines.length &&
+        oldLines[start] == newLines[start]) {
+      start++;
+    }
+
+    int endOld = oldLines.length - 1;
+    int endNew = newLines.length - 1;
+    while (endOld >= start &&
+        endNew >= start &&
+        oldLines[endOld] == newLines[endNew]) {
+      endOld--;
+      endNew--;
+    }
+
+    final result = <VibeDiffLine>[];
+    int added = 0;
+    int removed = 0;
+
+    for (int i = 0; i < start; i++) {
+      result.add(
+        VibeDiffLine(
+          type: VibeDiffLineType.context,
+          oldLineNumber: i + 1,
+          newLineNumber: i + 1,
+          content: oldLines[i],
+        ),
+      );
+    }
+
+    final midOld = oldLines.sublist(start, endOld + 1);
+    final midNew = newLines.sublist(start, endNew + 1);
+
+    if (midOld.length * midNew.length <= 160000) {
+      final m = midOld.length;
+      final n = midNew.length;
+      final dp = List.generate(m + 1, (_) => List<int>.filled(n + 1, 0));
+
+      for (int i = m - 1; i >= 0; i--) {
+        for (int j = n - 1; j >= 0; j--) {
+          if (midOld[i] == midNew[j]) {
+            dp[i][j] = 1 + dp[i + 1][j + 1];
+          } else {
+            final a = dp[i + 1][j];
+            final b = dp[i][j + 1];
+            dp[i][j] = a >= b ? a : b;
+          }
+        }
       }
 
-      activities.add(VibeActivityItem(
-        title: name,
-        type: 'command',
-        detail: cleanCmd.isNotEmpty ? cleanCmd : null,
-        output: cleanOut.isNotEmpty ? cleanOut : null,
-        timestamp: timestamp,
-        isSuccess: isSuccess,
-      ));
+      int i = 0;
+      int j = 0;
+      int curOld = start + 1;
+      int curNew = start + 1;
+
+      while (i < m && j < n) {
+        if (midOld[i] == midNew[j]) {
+          result.add(
+            VibeDiffLine(
+              type: VibeDiffLineType.context,
+              oldLineNumber: curOld++,
+              newLineNumber: curNew++,
+              content: midOld[i],
+            ),
+          );
+          i++;
+          j++;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+          removed++;
+          result.add(
+            VibeDiffLine(
+              type: VibeDiffLineType.removed,
+              oldLineNumber: curOld++,
+              content: midOld[i],
+            ),
+          );
+          i++;
+        } else {
+          added++;
+          result.add(
+            VibeDiffLine(
+              type: VibeDiffLineType.added,
+              newLineNumber: curNew++,
+              content: midNew[j],
+            ),
+          );
+          j++;
+        }
+      }
+
+      while (i < m) {
+        removed++;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.removed,
+            oldLineNumber: curOld++,
+            content: midOld[i++],
+          ),
+        );
+      }
+      while (j < n) {
+        added++;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.added,
+            newLineNumber: curNew++,
+            content: midNew[j++],
+          ),
+        );
+      }
     } else {
-      final cleanInput = _cleanToolInput(name, input);
-      final cleanOut = _cleanToolOutput(output);
-
-      final existingIdx = activities.indexWhere((a) =>
-          a.title == name &&
-          (cleanInput.isEmpty || a.detail == cleanInput) &&
-          (a.timestamp.difference(timestamp).abs().inSeconds < 10));
-
-      if (existingIdx != -1) {
-        final existing = activities[existingIdx];
-        activities[existingIdx] = VibeActivityItem(
-          title: existing.title,
-          type: existing.type,
-          detail: existing.detail ?? (cleanInput.isNotEmpty ? cleanInput : null),
-          output: cleanOut.isNotEmpty ? cleanOut : existing.output,
-          timestamp: existing.timestamp,
-          isSuccess: isSuccess && existing.isSuccess,
+      int curOld = start + 1;
+      for (final line in midOld) {
+        removed++;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.removed,
+            oldLineNumber: curOld++,
+            content: line,
+          ),
         );
-        return;
       }
-
-      activities.add(VibeActivityItem(
-        title: name,
-        type: 'tool',
-        detail: cleanInput.isNotEmpty ? cleanInput : null,
-        output: cleanOut.isNotEmpty ? cleanOut : null,
-        timestamp: timestamp,
-        isSuccess: isSuccess,
-      ));
-    }
-  }
-
-  String _extractFileNameFromCode(String code, String lang, int fallbackIdx) {
-    final firstLines = code.split('\n').take(3).join('\n');
-    final match = RegExp(r'(?://|/\*|#|<!--)\s*(?:file:?\s*)?([a-zA-Z0-9_\-./\\]+\.[a-zA-Z0-9]+)', caseSensitive: false)
-        .firstMatch(firstLines);
-
-    if (match != null) {
-      final raw = match.group(1)!;
-      return raw.split(RegExp(r'[\\/]')).last;
+      int curNew = start + 1;
+      for (final line in midNew) {
+        added++;
+        result.add(
+          VibeDiffLine(
+            type: VibeDiffLineType.added,
+            newLineNumber: curNew++,
+            content: line,
+          ),
+        );
+      }
     }
 
-    final ext = _languageExtension(lang);
-    return 'snippet_$fallbackIdx.$ext';
+    int tailOld = endOld + 2;
+    int tailNew = endNew + 2;
+    for (int i = endOld + 1; i < oldLines.length; i++) {
+      result.add(
+        VibeDiffLine(
+          type: VibeDiffLineType.context,
+          oldLineNumber: tailOld++,
+          newLineNumber: tailNew++,
+          content: oldLines[i],
+        ),
+      );
+    }
+
+    return (result, added, removed);
   }
 
-  String _detectLanguage(String fileName) {
-    final ext = fileName.contains('.') ? fileName.split('.').last.toLowerCase() : '';
+  String _summarizeReasoning(String text) {
+    final firstLine = text
+        .split('\n')
+        .map((l) => l.trim())
+        .firstWhere((l) => l.isNotEmpty, orElse: () => 'Thinking...');
+    return firstLine.length > 75
+        ? '${firstLine.substring(0, 75)}...'
+        : firstLine;
+  }
+
+  (String, String, String, bool) _parseCodeBlockHeader(
+    String header,
+    String codeBody,
+    int idx,
+    String precedingText,
+  ) {
+    String lang = 'plaintext';
+    String? detectedPath;
+
+    final parts = header
+        .split(RegExp(r'[\s:]+'))
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (parts.isNotEmpty) {
+      final first = parts.first.toLowerCase();
+      if (first.contains('.') || first.contains('/')) {
+        detectedPath = parts.first;
+        lang = _inferLanguage(detectedPath);
+      } else {
+        lang = first;
+        if (parts.length > 1 &&
+            (parts[1].contains('.') || parts[1].contains('/'))) {
+          detectedPath = parts[1];
+        }
+      }
+    }
+
+    if (detectedPath == null) {
+      final firstLine = codeBody.split('\n').first.trim();
+      final commentFileMatch = RegExp(
+        r'^(?://|#|/\*|--)\s*([a-zA-Z0-9_.\-/\\]+\.[a-zA-Z0-9]+)',
+      ).firstMatch(firstLine);
+      if (commentFileMatch != null) {
+        detectedPath = commentFileMatch.group(1);
+      }
+    }
+
+    if (detectedPath == null && precedingText.isNotEmpty) {
+      final tail = precedingText.length > 220
+          ? precedingText.substring(precedingText.length - 220)
+          : precedingText;
+      final backtickFileMatches = RegExp(
+        r'`([a-zA-Z0-9_.\-/\\]+\.[a-zA-Z0-9]{1,8})`',
+      ).allMatches(tail);
+      if (backtickFileMatches.isNotEmpty) {
+        detectedPath = backtickFileMatches.last.group(1);
+      }
+    }
+
+    final isNamedFile = detectedPath != null && detectedPath.isNotEmpty;
+    final ext = _extForLang(lang);
+    final finalPath = isNamedFile ? detectedPath : 'snippet_$idx.$ext';
+    final finalName = finalPath.split(RegExp(r'[/\\]')).last;
+    if (lang == 'plaintext' && finalName.contains('.')) {
+      lang = _inferLanguage(finalName);
+    }
+
+    return (lang, finalPath, finalName, isNamedFile);
+  }
+
+  String _inferLanguage(String filename, {String fallback = 'plaintext'}) {
+    final ext = filename.split('.').last.toLowerCase();
     switch (ext) {
       case 'dart':
         return 'dart';
       case 'py':
         return 'python';
       case 'js':
+      case 'mjs':
         return 'javascript';
       case 'ts':
+      case 'tsx':
         return 'typescript';
       case 'json':
         return 'json';
       case 'yaml':
       case 'yml':
         return 'yaml';
-      case 'html':
-        return 'html';
-      case 'css':
-        return 'css';
+      case 'md':
+        return 'markdown';
       case 'sh':
       case 'bash':
         return 'bash';
-      case 'md':
-        return 'markdown';
+      case 'html':
+        return 'xml';
+      case 'css':
+        return 'css';
+      case 'rs':
+        return 'rust';
+      case 'go':
+        return 'go';
+      case 'kt':
+        return 'kotlin';
+      case 'swift':
+        return 'swift';
       case 'sql':
         return 'sql';
+      case 'c':
+      case 'cpp':
+      case 'h':
+        return 'cpp';
       default:
-        return 'plaintext';
+        return fallback;
     }
   }
 
-  String _languageExtension(String lang) {
+  String _extForLang(String lang) {
     switch (lang.toLowerCase()) {
       case 'dart':
         return 'dart';
@@ -699,856 +1087,74 @@ class _VibeModeViewState extends State<VibeModeView> {
         return 'html';
       case 'css':
         return 'css';
-      case 'bash':
-      case 'sh':
-        return 'sh';
+      case 'rust':
+      case 'rs':
+        return 'rs';
+      case 'go':
+        return 'go';
+      case 'sql':
+        return 'sql';
+      case 'diff':
+      case 'patch':
+        return 'diff';
       default:
         return 'txt';
     }
   }
 
-  IconData _getFileIcon(String lang) {
+  IconData _iconForLanguage(String lang) {
     switch (lang.toLowerCase()) {
       case 'dart':
-        return Icons.flutter_dash;
       case 'python':
-        return Icons.terminal_rounded;
       case 'javascript':
       case 'typescript':
-        return Icons.javascript_rounded;
+      case 'rust':
+      case 'go':
+      case 'cpp':
+        return Icons.code_rounded;
       case 'json':
       case 'yaml':
         return Icons.data_object_rounded;
-      case 'html':
-      case 'css':
-        return Icons.web_rounded;
+      case 'bash':
+      case 'sh':
+      case 'shell':
+        return Icons.terminal_rounded;
+      case 'diff':
+      case 'patch':
+        return Icons.difference_rounded;
       default:
         return Icons.description_outlined;
     }
   }
 
-  void _copyActiveCode(String code) async {
-    await Clipboard.setData(ClipboardData(text: code));
-    setState(() => _copied = true);
-    HapticFeedback.lightImpact();
-    Future.delayed(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _copied = false);
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final hasFiles = _files.isNotEmpty;
-    final activeFile = hasFiles && _selectedFileIndex < _files.length
-        ? _files[_selectedFileIndex]
-        : null;
-
-    return Container(
-      color: HermesTokens.bgPrimary,
-      child: Column(
-        children: [
-          // 1. Editor File Tabs Bar
-          _buildTabBar(hasFiles),
-
-          // 2. Editor Canvas / Empty State
-          Expanded(
-            child: activeFile != null
-                ? _buildCodeCanvas(activeFile)
-                : _buildEmptyWorkspaceState(),
-          ),
-
-          // 3. Collapsible Terminal & Activity Log Drawer
-          _buildTerminalDrawer(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildTabBar(bool hasFiles) {
-    final effectiveCwd = _currentExplorerSubpath ?? widget.activeCwd ?? _resolvedCwd;
-    final folderName = (effectiveCwd != null && effectiveCwd.isNotEmpty)
-        ? effectiveCwd.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).last
-        : "Workspace";
-
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(14, 6, 14, 6),
-      child: Container(
-        height: 38,
-        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
-        decoration: NeumorphicDecoration.raised(
-          radius: 19,
-          distance: 1.5,
-          blur: 3,
-          color: HermesTokens.bgSecondary,
-        ),
-        child: Row(
-          children: [
-            // Single Workspace Explorer Pill Button
-            InkWell(
-              onTap: () => _showDirectoryExplorer(context),
-              borderRadius: BorderRadius.circular(15),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: NeumorphicDecoration.raised(
-                  radius: 15,
-                  distance: 1.2,
-                  blur: 2.5,
-                  color: HermesTokens.bgPrimary,
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(
-                      Icons.folder_open_rounded,
-                      size: 14,
-                      color: HermesTokens.accentText,
-                    ),
-                    const SizedBox(width: 5),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 95),
-                      child: Text(
-                        folderName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: HermesTokens.textPrimary,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 2),
-                    const Icon(
-                      Icons.arrow_drop_down_rounded,
-                      size: 16,
-                      color: HermesTokens.textMuted,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(width: 6),
-            Container(
-              width: 1,
-              height: 18,
-              color: HermesTokens.border,
-            ),
-            const SizedBox(width: 6),
-            // Horizontal tabs
-            Expanded(
-              child: hasFiles
-                  ? ListView.builder(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _files.length,
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      itemBuilder: (ctx, idx) {
-                        final file = _files[idx];
-                        final isSelected = idx == _selectedFileIndex;
-
-                        return GestureDetector(
-                          onTap: () {
-                            HapticFeedback.selectionClick();
-                            setState(() => _selectedFileIndex = idx);
-                          },
-                          child: AnimatedContainer(
-                            duration: const Duration(milliseconds: 180),
-                            margin: const EdgeInsets.only(right: 6),
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
-                            decoration: isSelected
-                                ? NeumorphicDecoration.recessed(radius: 12)
-                                : BoxDecoration(
-                                    color: HermesTokens.bgPrimary.withValues(alpha: 0.6),
-                                    borderRadius: BorderRadius.circular(12),
-                                    border: Border.all(color: HermesTokens.border.withValues(alpha: 0.5)),
-                                  ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  _getFileIcon(file.language),
-                                  size: 12,
-                                  color: isSelected
-                                      ? HermesTokens.accentText
-                                      : HermesTokens.textMuted,
-                                ),
-                                const SizedBox(width: 5),
-                                Text(
-                                  file.name,
-                                  style: TextStyle(
-                                    fontSize: 11,
-                                    fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-                                    color: isSelected
-                                        ? HermesTokens.textPrimary
-                                        : HermesTokens.textMuted,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    )
-                  : const Center(
-                      child: Text(
-                        'No files opened yet',
-                        style: TextStyle(fontSize: 10.5, color: HermesTokens.textMuted),
-                      ),
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCodeCanvas(VibeFileItem file) {
-    final lines = file.content.split('\n');
-
-    return Container(
-      color: const Color(0xFF1E1E2E), // Modern IDE dark editor background
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // File Breadcrumbs & Actions Strip
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-            decoration: const BoxDecoration(
-              color: Color(0xFF181825),
-              border: Border(
-                bottom: BorderSide(color: Color(0xFF313244), width: 1),
-              ),
-            ),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Row(
-                    children: [
-                      Icon(
-                        _getFileIcon(file.language),
-                        size: 15,
-                        color: const Color(0xFF89B4FA),
-                      ),
-                      const SizedBox(width: 8),
-                      Flexible(
-                        child: Text(
-                          file.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.jetBrainsMono(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: const Color(0xFFCDD6F4),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                // Language Chip
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF313244),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    file.language.toUpperCase(),
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFFA6ADC8),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                // Lines count
-                Text(
-                  '${lines.length} lines',
-                  style: GoogleFonts.jetBrainsMono(
-                    fontSize: 10,
-                    color: const Color(0xFF6C7086),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                // Copy Button
-                GestureDetector(
-                  onTap: () => _copyActiveCode(file.content),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: _copied ? const Color(0xFF2E7D32) : const Color(0xFF313244),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          _copied ? Icons.check_rounded : Icons.copy_rounded,
-                          size: 12,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          _copied ? 'Copied' : 'Copy',
-                          style: GoogleFonts.jetBrainsMono(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-
-          // Code Text Area with Line Numbers
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Line numbers gutter
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: List.generate(lines.length, (i) {
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 14),
-                          child: Text(
-                            '${i + 1}',
-                            style: GoogleFonts.jetBrainsMono(
-                              fontSize: 12,
-                              height: 1.5,
-                              color: const Color(0xFF45475A),
-                            ),
-                          ),
-                        );
-                      }),
-                    ),
-                    // Syntax Highlighted Code
-                    HighlightView(
-                      file.content,
-                      language: file.language.isEmpty ? 'plaintext' : file.language,
-                      theme: atomOneDarkTheme,
-                      padding: EdgeInsets.zero,
-                      textStyle: GoogleFonts.jetBrainsMono(
-                        fontSize: 12,
-                        height: 1.5,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildEmptyWorkspaceState() {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 44,
-              height: 44,
-              decoration: NeumorphicDecoration.raised(radius: 14),
-              child: const Icon(
-                Icons.code_rounded,
-                size: 22,
-                color: HermesTokens.accentText,
-              ),
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Vibe Code Canvas',
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.w700,
-                color: HermesTokens.textPrimary,
-              ),
-            ),
-            const SizedBox(height: 4),
-            const Text(
-              'No files open yet. Tap the workspace folder on the left or ask Hermes to write code.',
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: 11,
-                color: HermesTokens.textMuted,
-                height: 1.3,
-              ),
-            ),
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              alignment: WrapAlignment.center,
-              children: [
-                _emptyStateActionChip(
-                  label: 'Workspace Files',
-                  icon: Icons.folder_open_rounded,
-                  prompt: 'List project files in the current workspace',
-                ),
-                _emptyStateActionChip(
-                  label: 'Generate Widget',
-                  icon: Icons.widgets_outlined,
-                  prompt: 'Create a responsive modern Flutter card widget with clean neumorphic styling',
-                ),
-                _emptyStateActionChip(
-                  label: 'Review Architecture',
-                  icon: Icons.architecture_rounded,
-                  prompt: 'Analyze current workspace structure and propose improvements',
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _emptyStateActionChip({
-    required String label,
-    required IconData icon,
-    required String prompt,
-  }) {
-    return InkWell(
-      onTap: () {
-        if (widget.onQuickPrompt != null) {
-          widget.onQuickPrompt!(prompt);
-        }
-      },
-      borderRadius: BorderRadius.circular(10),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: NeumorphicDecoration.raised(radius: 10, distance: 2, blur: 4),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 14, color: HermesTokens.accentText),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: HermesTokens.textPrimary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTerminalDrawer() {
-    final activityCount = _activities.length;
-    final isGenerating = widget.isGenerating;
-
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 240),
-      curve: Curves.easeOutCubic,
-      height: _isTerminalExpanded ? 260 : 42,
-      clipBehavior: Clip.hardEdge,
-      decoration: const BoxDecoration(
-        color: Color(0xFF11111B),
-        border: Border(
-          top: BorderSide(color: Color(0xFF313244), width: 1),
-        ),
-      ),
-      child: Column(
-        children: [
-          // Drawer Header Bar
-          InkWell(
-            onTap: () {
-              HapticFeedback.selectionClick();
-              setState(() => _isTerminalExpanded = !_isTerminalExpanded);
-            },
-            child: SizedBox(
-              height: 41,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.terminal_rounded,
-                    size: 16,
-                    color: isGenerating ? const Color(0xFFFAB387) : const Color(0xFFA6E3A1),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    'Terminal & Agent Activity',
-                    style: GoogleFonts.jetBrainsMono(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: const Color(0xFFCDD6F4),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF313244),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      '$activityCount events',
-                      style: GoogleFonts.jetBrainsMono(
-                        fontSize: 9,
-                        fontWeight: FontWeight.w600,
-                        color: const Color(0xFFA6ADC8),
-                      ),
-                    ),
-                  ),
-                  if (isGenerating) ...[
-                    const SizedBox(width: 6),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFAB387).withValues(alpha: 0.2),
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                      child: Text(
-                        'RUNNING',
-                        style: GoogleFonts.jetBrainsMono(
-                          fontSize: 9,
-                          fontWeight: FontWeight.w700,
-                          color: const Color(0xFFFAB387),
-                        ),
-                      ),
-                    ),
-                  ],
-                  const Spacer(),
-                  if (_isTerminalExpanded && _activities.isNotEmpty) ...[
-                    GestureDetector(
-                      onTap: () {
-                        HapticFeedback.lightImpact();
-                        setState(() {
-                          _clearedTerminalTimestamp = DateTime.now();
-                          _activities.clear();
-                          _expandedActivityIndices.clear();
-                        });
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF313244),
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          'Clear',
-                          style: GoogleFonts.jetBrainsMono(
-                            fontSize: 9,
-                            fontWeight: FontWeight.w600,
-                            color: const Color(0xFFBAC2DE),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                  Icon(
-                    _isTerminalExpanded
-                        ? Icons.keyboard_arrow_down_rounded
-                        : Icons.keyboard_arrow_up_rounded,
-                    color: const Color(0xFFA6ADC8),
-                    size: 20,
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-
-          // Expanded Terminal Content
-          if (_isTerminalExpanded)
-            Expanded(
-              child: Container(
-                color: const Color(0xFF0F0F17),
-                child: _activities.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No shell commands or tool activity recorded yet',
-                          style: GoogleFonts.jetBrainsMono(
-                            fontSize: 11,
-                            color: const Color(0xFF6C7086),
-                          ),
-                        ),
-                      )
-                    : ListView.builder(
-                        padding: const EdgeInsets.all(10),
-                        itemCount: _activities.length,
-                        itemBuilder: (ctx, idx) {
-                          final item = _activities[idx];
-                          final isCmd = item.type == 'command';
-                          final isThought = item.type == 'thought';
-                          final isRunning = item.type == 'running';
-
-                          String tagText = 'TOOL';
-                          Color tagBg = const Color(0xFF45475A);
-                          Color tagFg = Colors.white;
-
-                          if (isCmd) {
-                            tagText = 'SH';
-                            tagBg = const Color(0xFF1E66F5);
-                          } else if (item.type == 'file') {
-                            tagText = 'FILE';
-                            tagBg = const Color(0xFF04A5E5);
-                            tagFg = const Color(0xFF11111B);
-                          } else if (item.type == 'prompt') {
-                            tagText = 'AI';
-                            tagBg = const Color(0xFFCBA6F7);
-                            tagFg = const Color(0xFF11111B);
-                          } else if (item.type == 'info') {
-                            tagText = 'INFO';
-                            tagBg = const Color(0xFF89DCEB);
-                            tagFg = const Color(0xFF11111B);
-                          } else if (isThought) {
-                            tagText = 'THINK';
-                            tagBg = const Color(0xFFFAB387);
-                            tagFg = const Color(0xFF11111B);
-                          } else if (isRunning) {
-                            tagText = 'LIVE';
-                            tagBg = const Color(0xFFA6E3A1);
-                            tagFg = const Color(0xFF11111B);
-                          }
-
-                          final isExpanded = _expandedActivityIndices.contains(idx);
-
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Row(
-                                  children: [
-                                    Container(
-                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                      decoration: BoxDecoration(
-                                        color: tagBg,
-                                        borderRadius: BorderRadius.circular(3),
-                                      ),
-                                      child: Text(
-                                        tagText,
-                                        style: GoogleFonts.jetBrainsMono(
-                                          fontSize: 9,
-                                          fontWeight: FontWeight.w700,
-                                          color: tagFg,
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 6),
-                                    Expanded(
-                                      child: Text(
-                                        item.title,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: GoogleFonts.jetBrainsMono(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: isRunning
-                                              ? const Color(0xFFA6E3A1)
-                                              : (item.isSuccess ? const Color(0xFFA6E3A1) : const Color(0xFFF38BA8)),
-                                        ),
-                                      ),
-                                    ),
-                                    Text(
-                                      '${item.timestamp.hour.toString().padLeft(2, '0')}:${item.timestamp.minute.toString().padLeft(2, '0')}',
-                                      style: GoogleFonts.jetBrainsMono(
-                                        fontSize: 9,
-                                        color: const Color(0xFF585B70),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                if (item.detail != null &&
-                                    item.detail!.isNotEmpty &&
-                                    item.detail != item.title)
-                                  Padding(
-                                    padding: const EdgeInsets.only(top: 2, left: 4),
-                                    child: Text(
-                                      item.detail!,
-                                      maxLines: isExpanded ? null : 3,
-                                      overflow: isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                                      style: GoogleFonts.jetBrainsMono(
-                                        fontSize: 10,
-                                        fontWeight: item.detail!.startsWith('\$') ? FontWeight.w600 : FontWeight.w400,
-                                        color: item.detail!.startsWith('\$') ? const Color(0xFF89B4FA) : const Color(0xFFBAC2DE),
-                                      ),
-                                    ),
-                                  ),
-                                if (item.output != null && item.output!.isNotEmpty)
-                                  GestureDetector(
-                                    onTap: () {
-                                      HapticFeedback.selectionClick();
-                                      setState(() {
-                                        if (isExpanded) {
-                                          _expandedActivityIndices.remove(idx);
-                                        } else {
-                                          _expandedActivityIndices.add(idx);
-                                        }
-                                      });
-                                    },
-                                    child: Container(
-                                      margin: const EdgeInsets.only(top: 4, left: 4),
-                                      padding: const EdgeInsets.all(8),
-                                      decoration: BoxDecoration(
-                                        color: const Color(0xFF181825),
-                                        borderRadius: BorderRadius.circular(4),
-                                        border: Border.all(
-                                          color: isExpanded ? const Color(0xFF89B4FA) : const Color(0xFF313244),
-                                          width: 0.5,
-                                        ),
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment: CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            item.output!,
-                                            maxLines: isExpanded ? null : 6,
-                                            overflow: isExpanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                                            style: GoogleFonts.jetBrainsMono(
-                                              fontSize: 10,
-                                              height: 1.4,
-                                              color: const Color(0xFFBAC2DE),
-                                            ),
-                                          ),
-                                          if (item.output!.length > 120)
-                                            Padding(
-                                              padding: const EdgeInsets.only(top: 4),
-                                              child: Row(
-                                                mainAxisAlignment: MainAxisAlignment.end,
-                                                children: [
-                                                  Text(
-                                                    isExpanded ? 'Collapse' : 'Tap to expand full output',
-                                                    style: GoogleFonts.jetBrainsMono(
-                                                      fontSize: 9,
-                                                      color: const Color(0xFF6C7086),
-                                                    ),
-                                                  ),
-                                                  Icon(
-                                                    isExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
-                                                    size: 13,
-                                                    color: const Color(0xFF6C7086),
-                                                  ),
-                                                ],
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  void _showDirectoryExplorer(BuildContext context) {
-    showModalBottomSheet(
+  void _showSessionFilesSheet() {
+    showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (modalCtx) {
-        String filterQuery = '';
-        String activeFilterTab = 'all'; // 'all', 'folders', 'files'
-
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            final rootCwd = widget.activeCwd ?? _resolvedCwd ?? 'Active Workspace';
-            final currentPath = _currentExplorerSubpath ?? rootCwd;
-
-            // Gather candidate files
-            final candidateFiles = <Map<String, dynamic>>[];
-
-            // If at root of explorer, show open tabs first
-            if (_currentExplorerSubpath == null) {
-              for (final f in _files) {
-                candidateFiles.add({
-                  'name': f.name,
-                  'path': f.path,
-                  'isDir': false,
-                  'source': f.toolOrigin ?? 'Active Tab',
-                  'isOpen': true,
-                });
-              }
-            }
-
-            // Remote files
-            for (final rf in _remoteFiles) {
-              final path = rf['path']?.toString() ?? rf['name']?.toString() ?? '';
-              final name = rf['name']?.toString() ?? path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty).last;
-              final isDir = _isItemDir(rf, name);
-
-              if (path.isNotEmpty && !candidateFiles.any((c) => c['path'] == path)) {
-                candidateFiles.add({
-                  'name': name,
-                  'path': path,
-                  'isDir': isDir,
-                  'source': 'Filesystem',
-                  'isOpen': _files.any((f) => f.path == path || f.name == name),
-                });
-              }
-            }
-
-            // Filter by search and tabs
-            final filtered = candidateFiles.where((c) {
-              final name = c['name'].toString().toLowerCase();
-              final path = c['path'].toString().toLowerCase();
-              final q = filterQuery.toLowerCase().trim();
-
-              if (q.isNotEmpty && !name.contains(q) && !path.contains(q)) {
-                return false;
-              }
-
-              final isDir = c['isDir'] == true;
-              if (activeFilterTab == 'folders' && !isDir) return false;
-              if (activeFilterTab == 'files' && isDir) return false;
-
-              return true;
-            }).toList();
-
-            // Sort: folders first, then alphabetical
-            filtered.sort((a, b) {
-              final aIsDir = a['isDir'] == true;
-              final bIsDir = b['isDir'] == true;
-              if (aIsDir && !bIsDir) return -1;
-              if (!aIsDir && bIsDir) return 1;
-              return a['name'].toString().toLowerCase().compareTo(b['name'].toString().toLowerCase());
-            });
-
-            final folderCount = candidateFiles.where((c) => c['isDir'] == true).length;
-            final fileCount = candidateFiles.where((c) => c['isDir'] != true).length;
-
-            return Container(
-              height: MediaQuery.of(context).size.height * 0.82,
-              decoration: const BoxDecoration(
-                color: HermesTokens.bgElevated,
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-              ),
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(ctx).viewInsets.bottom,
+          ),
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(ctx).size.height * 0.72,
+            ),
+            decoration: BoxDecoration(
+              color: HermesTokens.bgElevated,
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            child: SafeArea(
+              top: false,
               child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // Drag Handle
                   Center(
                     child: Container(
-                      margin: const EdgeInsets.only(top: 10, bottom: 6),
-                      width: 42,
+                      width: 36,
                       height: 4,
                       decoration: BoxDecoration(
                         color: HermesTokens.border,
@@ -1556,411 +1162,1047 @@ class _VibeModeViewState extends State<VibeModeView> {
                       ),
                     ),
                   ),
-
-                  // Explorer Header
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 6, 12, 10),
-                    child: Row(
-                      children: [
-                        Container(
-                          width: 38,
-                          height: 38,
-                          decoration: NeumorphicDecoration.raised(radius: 12, distance: 2, blur: 4),
-                          child: const Icon(Icons.folder_copy_rounded, size: 20, color: HermesTokens.accentText),
+                  const SizedBox(height: 16),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Session File Changes',
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: HermesTokens.textPrimary,
                         ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              const Text(
-                                "Workspace Explorer",
-                                style: TextStyle(
-                                  fontSize: 16,
-                                  fontWeight: FontWeight.w800,
-                                  color: HermesTokens.textPrimary,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                currentPath,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: GoogleFonts.jetBrainsMono(
-                                  fontSize: 10,
-                                  color: HermesTokens.textMuted,
-                                ),
-                              ),
-                            ],
-                          ),
+                      ),
+                      IconButton(
+                        icon: Icon(
+                          Icons.close_rounded,
+                          size: 18,
+                          color: HermesTokens.textMuted,
                         ),
-                        Container(
-                          width: 34,
-                          height: 34,
-                          decoration: NeumorphicDecoration.raised(radius: 10, distance: 1.5, blur: 3),
-                          child: IconButton(
-                            tooltip: "Refresh workspace tree",
-                            padding: EdgeInsets.zero,
-                            icon: _loadingRemoteFiles
-                                ? const SizedBox(
-                                    width: 14,
-                                    height: 14,
-                                    child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
-                                  )
-                                : const Icon(Icons.refresh_rounded, size: 18, color: HermesTokens.textSecondary),
-                            onPressed: _loadingRemoteFiles
-                                ? null
-                                : () async {
-                                    await _fetchWorkspaceFiles(subpath: _currentExplorerSubpath);
-                                    setModalState(() {});
-                                  },
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Container(
-                          width: 34,
-                          height: 34,
-                          decoration: NeumorphicDecoration.raised(radius: 10, distance: 1.5, blur: 3),
-                          child: IconButton(
-                            padding: EdgeInsets.zero,
-                            icon: const Icon(Icons.close_rounded, size: 18, color: HermesTokens.textMuted),
-                            onPressed: () => Navigator.pop(modalCtx),
-                          ),
-                        ),
-                      ],
-                    ),
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: () => Navigator.of(ctx).pop(),
+                      ),
+                    ],
                   ),
-
-                  // Breadcrumb / Back button if inside subfolder
-                  if (_currentExplorerSubpath != null)
+                  const SizedBox(height: 12),
+                  if (_allFiles.isEmpty)
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                        decoration: NeumorphicDecoration.recessed(radius: 10),
-                        child: Row(
-                          children: [
-                            InkWell(
-                              onTap: () async {
-                                HapticFeedback.lightImpact();
-                                final parent = _getParentPath(_currentExplorerSubpath!);
-                                setModalState(() => _currentExplorerSubpath = parent);
-                                await _fetchWorkspaceFiles(subpath: parent);
-                                setModalState(() {});
-                              },
-                              borderRadius: BorderRadius.circular(8),
-                              child: Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                                decoration: NeumorphicDecoration.raised(radius: 8, distance: 1, blur: 2),
-                                child: const Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.arrow_upward_rounded, size: 13, color: HermesTokens.accentText),
-                                    SizedBox(width: 4),
-                                    Text("Up to parent", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: HermesTokens.accentText)),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                _currentExplorerSubpath!,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: GoogleFonts.jetBrainsMono(
-                                  fontSize: 10,
-                                  color: HermesTokens.textSecondary,
-                                ),
-                              ),
-                            ),
-                          ],
+                      padding: const EdgeInsets.symmetric(vertical: 24),
+                      child: Center(
+                        child: Text(
+                          'No files modified or inspected in this session yet.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: HermesTokens.textMuted,
+                          ),
                         ),
                       ),
-                    ),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: _allFiles.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 8),
+                        itemBuilder: (_, idx) {
+                          final item = _allFiles[idx];
+                          final open = _openFiles;
+                          final isCurrent =
+                              open.isNotEmpty &&
+                              _selectedFileIndex < open.length &&
+                              open[_selectedFileIndex].id == item.id;
 
-                  // Search Bar
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                    child: Container(
-                      decoration: NeumorphicDecoration.recessed(radius: 12),
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: TextField(
-                        style: const TextStyle(fontSize: 13, color: HermesTokens.textPrimary),
-                        decoration: InputDecoration(
-                          hintText: "Search files or folders...",
-                          hintStyle: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
-                          icon: const Icon(Icons.search_rounded, size: 18, color: HermesTokens.textMuted),
-                          border: InputBorder.none,
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 10),
-                          suffixIcon: filterQuery.isNotEmpty
-                              ? IconButton(
-                                  icon: const Icon(Icons.clear_rounded, size: 16, color: HermesTokens.textMuted),
-                                  onPressed: () {
-                                    setModalState(() => filterQuery = '');
-                                  },
-                                )
-                              : null,
-                        ),
-                        onChanged: (val) {
-                          setModalState(() {
-                            filterQuery = val;
-                          });
-                        },
-                      ),
-                    ),
-                  ),
-
-                  // Filter Chips (All, Folders, Files)
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
-                    child: Row(
-                      children: [
-                        _explorerFilterChip(
-                          label: "All (${candidateFiles.length})",
-                          isSelected: activeFilterTab == 'all',
-                          onTap: () => setModalState(() => activeFilterTab = 'all'),
-                        ),
-                        const SizedBox(width: 6),
-                        _explorerFilterChip(
-                          label: "Folders ($folderCount)",
-                          isSelected: activeFilterTab == 'folders',
-                          onTap: () => setModalState(() => activeFilterTab = 'folders'),
-                        ),
-                        const SizedBox(width: 6),
-                        _explorerFilterChip(
-                          label: "Files ($fileCount)",
-                          isSelected: activeFilterTab == 'files',
-                          onTap: () => setModalState(() => activeFilterTab = 'files'),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // File and Directory List
-                  Expanded(
-                    child: filtered.isEmpty
-                        ? Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(24),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
+                          return InkWell(
+                            borderRadius: BorderRadius.circular(14),
+                            onTap: () {
+                              _reopenOrSelectFile(item);
+                              Navigator.of(ctx).pop();
+                            },
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 12,
+                              ),
+                              decoration: isCurrent
+                                  ? NeumorphicDecoration.recessed(radius: 14)
+                                  : NeumorphicDecoration.raised(
+                                      radius: 14,
+                                      distance: 2,
+                                      blur: 4,
+                                    ),
+                              child: Row(
                                 children: [
-                                  Container(
-                                    width: 48,
-                                    height: 48,
-                                    decoration: NeumorphicDecoration.raised(radius: 16),
-                                    child: const Icon(Icons.folder_off_outlined, size: 24, color: HermesTokens.textMuted),
+                                  Icon(
+                                    _iconForLanguage(item.language),
+                                    size: 16,
+                                    color: isCurrent
+                                        ? HermesTokens.accent
+                                        : HermesTokens.textMuted,
                                   ),
-                                  const SizedBox(height: 12),
-                                  Text(
-                                    filterQuery.isNotEmpty
-                                        ? "No matching items for \"$filterQuery\""
-                                        : "No files found in this directory",
-                                    style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: HermesTokens.textSecondary),
-                                  ),
-                                  const SizedBox(height: 14),
-                                  if (_currentExplorerSubpath != null)
-                                    OutlinedButton.icon(
-                                      onPressed: () async {
-                                        setModalState(() => _currentExplorerSubpath = null);
-                                        await _fetchWorkspaceFiles();
-                                        setModalState(() {});
-                                      },
-                                      icon: const Icon(Icons.home_rounded, size: 15),
-                                      label: const Text("Go to Root Workspace"),
-                                    )
-                                  else
-                                    OutlinedButton.icon(
-                                      onPressed: () async {
-                                        await _fetchWorkspaceFiles();
-                                        setModalState(() {});
-                                      },
-                                      icon: const Icon(Icons.sync_rounded, size: 15),
-                                      label: const Text("Scan Filesystem"),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          )
-                        : ListView.builder(
-                            padding: const EdgeInsets.fromLTRB(16, 2, 16, 16),
-                            itemCount: filtered.length,
-                            itemBuilder: (ctx, idx) {
-                              final item = filtered[idx];
-                              final isDir = item['isDir'] == true;
-                              final name = item['name'].toString();
-                              final path = item['path'].toString();
-                              final isOpen = item['isOpen'] == true;
-                              final isLoadingThis = _loadingFilePath == path;
-                              final lang = _detectLanguage(name);
-
-                              return Padding(
-                                padding: const EdgeInsets.only(bottom: 8),
-                                child: InkWell(
-                                  onTap: () async {
-                                    HapticFeedback.selectionClick();
-                                    if (isDir) {
-                                      // Drill down into directory!
-                                      setModalState(() => _currentExplorerSubpath = path);
-                                      await _fetchWorkspaceFiles(subpath: path);
-                                      setModalState(() {});
-                                    } else {
-                                      // Open file in editor!
-                                      _openRemoteFile(path, modalCtx);
-                                    }
-                                  },
-                                  borderRadius: BorderRadius.circular(12),
-                                  child: Container(
-                                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                                    decoration: NeumorphicDecoration.raised(
-                                      radius: 12,
-                                      distance: 1.2,
-                                      blur: 2.5,
-                                      color: HermesTokens.bgPrimary,
-                                    ),
-                                    child: Row(
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
                                       children: [
-                                        // Leading Icon Box
-                                        Container(
-                                          width: 36,
-                                          height: 36,
-                                          decoration: BoxDecoration(
-                                            color: isDir
-                                                ? const Color(0xFF89B4FA).withValues(alpha: 0.15)
-                                                : HermesTokens.accent.withValues(alpha: 0.12),
-                                            borderRadius: BorderRadius.circular(10),
-                                          ),
-                                          child: Icon(
-                                            isDir ? Icons.folder_rounded : _getFileIcon(lang),
-                                            size: 18,
-                                            color: isDir ? const Color(0xFF89B4FA) : HermesTokens.accentText,
+                                        Text(
+                                          item.name,
+                                          style: GoogleFonts.jetBrainsMono(
+                                            fontSize: 12,
+                                            fontWeight: isCurrent
+                                                ? FontWeight.w700
+                                                : FontWeight.w600,
+                                            color: isCurrent
+                                                ? HermesTokens.accentText
+                                                : HermesTokens.textPrimary,
                                           ),
                                         ),
-                                        const SizedBox(width: 12),
-                                        // Title & Monospace Subtitle
-                                        Expanded(
-                                          child: Column(
-                                            crossAxisAlignment: CrossAxisAlignment.start,
-                                            children: [
-                                              Row(
-                                                children: [
-                                                  Flexible(
-                                                    child: Text(
-                                                      name,
-                                                      maxLines: 1,
-                                                      overflow: TextOverflow.ellipsis,
-                                                      style: TextStyle(
-                                                        fontSize: 13,
-                                                        fontWeight: isDir ? FontWeight.w700 : FontWeight.w600,
-                                                        color: HermesTokens.textPrimary,
-                                                      ),
-                                                    ),
-                                                  ),
-                                                  const SizedBox(width: 6),
-                                                  if (isDir)
-                                                    Container(
-                                                      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                                                      decoration: BoxDecoration(
-                                                        color: const Color(0xFF89B4FA).withValues(alpha: 0.15),
-                                                        borderRadius: BorderRadius.circular(4),
-                                                      ),
-                                                      child: const Text(
-                                                        "DIR",
-                                                        style: TextStyle(
-                                                          fontSize: 8.5,
-                                                          fontWeight: FontWeight.w700,
-                                                          color: Color(0xFF89B4FA),
-                                                        ),
-                                                      ),
-                                                    ),
-                                                ],
-                                              ),
-                                              const SizedBox(height: 2),
-                                              Text(
-                                                path,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: GoogleFonts.jetBrainsMono(
-                                                  fontSize: 9.5,
-                                                  color: HermesTokens.textMuted,
-                                                ),
-                                              ),
-                                            ],
+                                        if (item.path != item.name) ...[
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            item.path,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: GoogleFonts.jetBrainsMono(
+                                              fontSize: 10,
+                                              color: HermesTokens.textMuted,
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 8),
-                                        // Trailing
-                                        if (isLoadingThis)
-                                          const SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(strokeWidth: 2, color: HermesTokens.accent),
-                                          )
-                                        else if (isOpen)
-                                          Container(
-                                            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-                                            decoration: BoxDecoration(
-                                              color: HermesTokens.accent.withValues(alpha: 0.15),
-                                              borderRadius: BorderRadius.circular(6),
-                                            ),
-                                            child: const Text(
-                                              "OPEN",
-                                              style: TextStyle(
-                                                fontSize: 9.5,
-                                                fontWeight: FontWeight.w700,
-                                                color: HermesTokens.accentText,
-                                              ),
-                                            ),
-                                          )
-                                        else if (isDir)
-                                          const Icon(Icons.chevron_right_rounded, size: 18, color: HermesTokens.textMuted)
-                                        else
-                                          const Icon(Icons.file_open_outlined, size: 16, color: HermesTokens.textMuted),
+                                        ],
                                       ],
                                     ),
                                   ),
-                                ),
-                              );
-                            },
-                          ),
-                  ),
+                                  if (item.addedCount > 0 ||
+                                      item.removedCount > 0) ...[
+                                    const SizedBox(width: 8),
+                                    _buildDiffStatText(
+                                      item.addedCount,
+                                      item.removedCount,
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
                 ],
               ),
-            );
-          },
+            ),
+          ),
         );
       },
     );
   }
 
-  Widget _explorerFilterChip({
+  Widget _buildDiffStatText(int added, int removed) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (added > 0)
+          Text(
+            '+$added',
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: HermesTokens.success,
+            ),
+          ),
+        if (added > 0 && removed > 0) const SizedBox(width: 6),
+        if (removed > 0)
+          Text(
+            '-$removed',
+            style: GoogleFonts.jetBrainsMono(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: HermesTokens.error,
+            ),
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final openFiles = _openFiles;
+    return Container(
+      color: HermesTokens.bgPrimary,
+      child: Column(
+        children: [
+          if (_allFiles.isNotEmpty) _buildTopFileTabsBar(openFiles),
+          Expanded(
+            child: openFiles.isEmpty
+                ? _buildEmptyWorkspaceState()
+                : _buildInspectorView(
+                    openFiles[_selectedFileIndex.clamp(0, openFiles.length - 1)],
+                  ),
+          ),
+          _buildActivityDrawer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTopFileTabsBar(List<VibeFileItem> openFiles) {
+    return Container(
+      height: 46,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: HermesTokens.bgPrimary,
+        border: Border(bottom: BorderSide(color: HermesTokens.border)),
+      ),
+      child: Row(
+        children: [
+          InkWell(
+            onTap: _showSessionFilesSheet,
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              width: 34,
+              height: 34,
+              decoration: NeumorphicDecoration.raised(
+                radius: 10,
+                distance: 2,
+                blur: 4,
+              ),
+              child: Icon(
+                Icons.folder_open_rounded,
+                size: 16,
+                color: HermesTokens.accentText,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: openFiles.isEmpty
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      _allFiles.isEmpty
+                          ? 'No files in session'
+                          : '${_allFiles.length} session files available',
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 11,
+                        color: HermesTokens.textMuted,
+                      ),
+                    ),
+                  )
+                : ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    itemCount: openFiles.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 8),
+                    itemBuilder: (context, idx) {
+                      final f = openFiles[idx];
+                      final isSelected = idx == _selectedFileIndex;
+                      return GestureDetector(
+                        onTap: () {
+                          HapticFeedback.selectionClick();
+                          _selectFileTab(idx);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10),
+                          decoration: isSelected
+                              ? NeumorphicDecoration.recessed(radius: 10)
+                              : NeumorphicDecoration.raised(
+                                  radius: 10,
+                                  distance: 1.5,
+                                  blur: 3,
+                                ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                _iconForLanguage(f.language),
+                                size: 13,
+                                color: isSelected
+                                    ? HermesTokens.accentText
+                                    : HermesTokens.textMuted,
+                              ),
+                              const SizedBox(width: 6),
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 140),
+                                child: Text(
+                                  f.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: GoogleFonts.jetBrainsMono(
+                                    fontSize: 11,
+                                    fontWeight: isSelected
+                                        ? FontWeight.w700
+                                        : FontWeight.w500,
+                                    color: isSelected
+                                        ? HermesTokens.textPrimary
+                                        : HermesTokens.textSecondary,
+                                  ),
+                                ),
+                              ),
+                              if (f.addedCount > 0 || f.removedCount > 0) ...[
+                                const SizedBox(width: 6),
+                                _buildDiffStatText(f.addedCount, f.removedCount),
+                              ],
+                              const SizedBox(width: 6),
+                              GestureDetector(
+                                onTap: () => _closeFileTab(f.id),
+                                behavior: HitTestBehavior.opaque,
+                                child: Padding(
+                                  padding: const EdgeInsets.all(2),
+                                  child: Icon(
+                                    Icons.close_rounded,
+                                    size: 13,
+                                    color: HermesTokens.textMuted,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInspectorView(VibeFileItem file) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final showDiff = _showDiffView && file.hasDiff;
+    final totalLines = file.content.split('\n').length;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Action / Metadata Header
+          Padding(
+            padding: const EdgeInsets.only(left: 4, right: 4, bottom: 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        file.path,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: HermesTokens.textSecondary,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Row(
+                        children: [
+                          Text(
+                            '$totalLines lines',
+                            style: GoogleFonts.jetBrainsMono(
+                              fontSize: 10,
+                              color: HermesTokens.textMuted,
+                            ),
+                          ),
+                          if (file.hasDiff) ...[
+                            Text(
+                              ' · ',
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: HermesTokens.textMuted,
+                              ),
+                            ),
+                            _buildDiffStatText(file.addedCount, file.removedCount),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                if (file.hasDiff) ...[
+                  _buildDiffCodeToggle(showDiff),
+                  const SizedBox(width: 8),
+                ],
+                InkWell(
+                  onTap: () {
+                    Clipboard.setData(ClipboardData(text: file.content));
+                    HapticFeedback.lightImpact();
+                    setState(() => _copied = true);
+                    Future.delayed(const Duration(seconds: 2), () {
+                      if (mounted) setState(() => _copied = false);
+                    });
+                  },
+                  borderRadius: BorderRadius.circular(10),
+                  child: Container(
+                    height: 30,
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
+                    decoration: NeumorphicDecoration.raised(
+                      radius: 10,
+                      distance: 1.5,
+                      blur: 3,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          _copied ? Icons.check_rounded : Icons.copy_rounded,
+                          size: 13,
+                          color: _copied
+                              ? HermesTokens.success
+                              : HermesTokens.textSecondary,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          _copied ? 'Copied' : 'Copy',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                            color: _copied
+                                ? HermesTokens.success
+                                : HermesTokens.textSecondary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          // Recessed Code / Diff Well
+          Expanded(
+            child: Container(
+              decoration: NeumorphicDecoration.recessed(
+                radius: 14,
+                color: HermesTokens.codeBg,
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: showDiff
+                  ? _buildDiffCanvas(file, isDark)
+                  : _buildCodeCanvas(file, isDark),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDiffCodeToggle(bool showDiff) {
+    return Container(
+      height: 30,
+      padding: const EdgeInsets.all(2),
+      decoration: NeumorphicDecoration.recessed(radius: 10),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _toggleSegment(
+            label: 'Diff',
+            selected: showDiff,
+            onTap: () {
+              if (!_showDiffView) {
+                HapticFeedback.selectionClick();
+                setState(() => _showDiffView = true);
+              }
+            },
+          ),
+          _toggleSegment(
+            label: 'Code',
+            selected: !showDiff,
+            onTap: () {
+              if (_showDiffView) {
+                HapticFeedback.selectionClick();
+                setState(() => _showDiffView = false);
+              }
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _toggleSegment({
     required String label,
-    required bool isSelected,
+    required bool selected,
     required VoidCallback onTap,
   }) {
-    return InkWell(
+    return GestureDetector(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(8),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: isSelected
-            ? NeumorphicDecoration.recessed(radius: 8)
-            : BoxDecoration(
-                color: HermesTokens.bgSecondary,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        decoration: selected
+            ? BoxDecoration(
+                color: HermesTokens.bgElevated,
                 borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: HermesTokens.border.withValues(alpha: 0.5)),
-              ),
+                border: Border.all(color: HermesTokens.borderBright, width: 0.8),
+              )
+            : const BoxDecoration(),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 10.5,
-            fontWeight: isSelected ? FontWeight.w700 : FontWeight.w500,
-            color: isSelected ? HermesTokens.accentText : HermesTokens.textMuted,
+            fontSize: 11,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            color: selected ? HermesTokens.textPrimary : HermesTokens.textMuted,
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildDiffCanvas(VibeFileItem file, bool isDark) {
+    final diffLines = file.diffLines;
+    return ListView.builder(
+      controller: _diffVerticalScroll,
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: diffLines.length,
+      itemBuilder: (context, index) {
+        final line = diffLines[index];
+
+        if (line.type == VibeDiffLineType.header) {
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+            color: HermesTokens.accentSubtle,
+            child: Text(
+              line.content,
+              style: GoogleFonts.jetBrainsMono(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: HermesTokens.accentText,
+              ),
+            ),
+          );
+        }
+
+        Color rowBg = Colors.transparent;
+        Color barColor = Colors.transparent;
+        Color textColor = HermesTokens.textPrimary;
+        String prefix = ' ';
+
+        if (line.type == VibeDiffLineType.added) {
+          rowBg = HermesTokens.success.withValues(alpha: isDark ? 0.14 : 0.12);
+          barColor = HermesTokens.success;
+          textColor = isDark
+              ? const Color(0xFFA7F3D0)
+              : const Color(0xFF065F46);
+          prefix = '+';
+        } else if (line.type == VibeDiffLineType.removed) {
+          rowBg = HermesTokens.error.withValues(alpha: isDark ? 0.14 : 0.12);
+          barColor = HermesTokens.error;
+          textColor = isDark
+              ? const Color(0xFFFECACA)
+              : const Color(0xFF991B1B);
+          prefix = '-';
+        }
+
+        final oldNum = line.oldLineNumber?.toString() ?? '';
+        final newNum = line.newLineNumber?.toString() ?? '';
+
+        return Container(
+          color: rowBg,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 3,
+                height: 20,
+                color: barColor,
+              ),
+              SizedBox(
+                width: 34,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 4, top: 2),
+                  child: Text(
+                    oldNum,
+                    textAlign: TextAlign.right,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 10,
+                      height: 1.5,
+                      color: HermesTokens.textMuted,
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 34,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 6, top: 2),
+                  child: Text(
+                    newNum,
+                    textAlign: TextAlign.right,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 10,
+                      height: 1.5,
+                      color: HermesTokens.textMuted,
+                    ),
+                  ),
+                ),
+              ),
+              SizedBox(
+                width: 14,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 1),
+                  child: Text(
+                    prefix,
+                    style: GoogleFonts.jetBrainsMono(
+                      fontSize: 11.5,
+                      height: 1.5,
+                      fontWeight: FontWeight.w700,
+                      color: barColor == Colors.transparent
+                          ? HermesTokens.textMuted
+                          : barColor,
+                    ),
+                  ),
+                ),
+              ),
+              Expanded(
+                child: SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  child: Padding(
+                    padding: const EdgeInsets.only(right: 14, top: 1, bottom: 1),
+                    child: SelectableText(
+                      line.content.isEmpty ? ' ' : line.content,
+                      style: GoogleFonts.jetBrainsMono(
+                        fontSize: 12,
+                        height: 1.5,
+                        color: textColor,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCodeCanvas(VibeFileItem file, bool isDark) {
+    final lines = file.content.split('\n');
+    final lineNumsBuffer = List.generate(lines.length, (i) => '${i + 1}').join('\n');
+
+    final baseTheme = isDark ? atomOneDarkTheme : atomOneLightTheme;
+    final customTheme = Map<String, TextStyle>.from(baseTheme);
+    customTheme['root'] = TextStyle(
+      color: HermesTokens.textPrimary,
+      backgroundColor: Colors.transparent,
+    );
+
+    return Scrollbar(
+      controller: _codeVerticalScroll,
+      child: SingleChildScrollView(
+        controller: _codeVerticalScroll,
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.only(left: 12, right: 10),
+              decoration: BoxDecoration(
+                border: Border(
+                  right: BorderSide(color: HermesTokens.border),
+                ),
+              ),
+              child: Text(
+                lineNumsBuffer,
+                textAlign: TextAlign.right,
+                style: GoogleFonts.jetBrainsMono(
+                  fontSize: 12,
+                  height: 1.55,
+                  color: HermesTokens.textMuted,
+                ),
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: HighlightView(
+                  file.content,
+                  language: file.language,
+                  theme: customTheme,
+                  textStyle: GoogleFonts.jetBrainsMono(
+                    fontSize: 12,
+                    height: 1.55,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyWorkspaceState() {
+    final quickActions = [
+      (
+        icon: Icons.account_tree_outlined,
+        title: 'Inspect Architecture',
+        subtitle: 'Map project structure and key modules',
+        prompt:
+            'Inspect the project structure and summarize the main architecture and entry points.',
+      ),
+      (
+        icon: Icons.difference_rounded,
+        title: 'Review Recent Changes',
+        subtitle: 'Check git status and diff in workspace',
+        prompt:
+            'Check git status and git diff to summarize the current uncommitted changes.',
+      ),
+      (
+        icon: Icons.bug_report_outlined,
+        title: 'Find & Fix Bugs',
+        subtitle: 'Run static analysis and resolve issues',
+        prompt:
+            'Analyze the codebase for errors or potential bugs and propose fixes.',
+      ),
+      (
+        icon: Icons.playlist_add_check_rounded,
+        title: 'Run Test Suite',
+        subtitle: 'Execute tests and verify coverage',
+        prompt:
+            'Run the project test suite and report any failing tests with fixes.',
+      ),
+    ];
+
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 56,
+              height: 56,
+              decoration: NeumorphicDecoration.raised(radius: 16),
+              child: Icon(
+                Icons.difference_rounded,
+                size: 24,
+                color: HermesTokens.accent,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'No code changes in this session',
+              style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: HermesTokens.textPrimary,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Files read, created, or modified by the agent appear here with line-by-line diffs.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 12,
+                color: HermesTokens.textMuted,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 420),
+              child: Column(
+                children: quickActions.map((action) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: InkWell(
+                      onTap: widget.onQuickPrompt != null
+                          ? () {
+                              HapticFeedback.selectionClick();
+                              widget.onQuickPrompt!(action.prompt);
+                            }
+                          : null,
+                      borderRadius: BorderRadius.circular(14),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 12,
+                        ),
+                        decoration: NeumorphicDecoration.raised(
+                          radius: 14,
+                          distance: 2.5,
+                          blur: 6,
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 36,
+                              height: 36,
+                              decoration: NeumorphicDecoration.recessed(
+                                radius: 10,
+                              ),
+                              child: Icon(
+                                action.icon,
+                                size: 17,
+                                color: HermesTokens.accentText,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    action.title,
+                                    style: TextStyle(
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: HermesTokens.textPrimary,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    action.subtitle,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: HermesTokens.textMuted,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(
+                              Icons.arrow_forward_ios_rounded,
+                              size: 13,
+                              color: HermesTokens.textMuted,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildActivityDrawer() {
+    final latest = _activities.isNotEmpty ? _activities.first : null;
+    final media = MediaQuery.of(context);
+    final isKeyboardOpen = media.viewInsets.bottom > 0;
+    final maxExpanded = (media.size.height * 0.35).clamp(140.0, 230.0);
+    final drawerHeight = _terminalExpanded
+        ? (isKeyboardOpen ? 120.0 : maxExpanded)
+        : 40.0;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+      height: drawerHeight,
+      decoration: BoxDecoration(
+        color: HermesTokens.bgSecondary,
+        border: Border(
+          top: BorderSide(color: HermesTokens.border),
+        ),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () {
+              HapticFeedback.selectionClick();
+              setState(() => _terminalExpanded = !_terminalExpanded);
+            },
+            child: SizedBox(
+              height: 39,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Row(
+                  children: [
+                    if (widget.isGenerating)
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.8,
+                          color: HermesTokens.accent,
+                        ),
+                      )
+                    else
+                      Icon(
+                        Icons.terminal_rounded,
+                        size: 15,
+                        color: HermesTokens.textMuted,
+                      ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        latest != null
+                            ? latest.title
+                            : (widget.isGenerating
+                                  ? 'Agent working...'
+                                  : 'Activity log'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 11,
+                          color: HermesTokens.textSecondary,
+                        ),
+                      ),
+                    ),
+                    if (_activities.isNotEmpty) ...[
+                      Text(
+                        '${_activities.length} steps',
+                        style: GoogleFonts.jetBrainsMono(
+                          fontSize: 10,
+                          color: HermesTokens.textMuted,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    Icon(
+                      _terminalExpanded
+                          ? Icons.keyboard_arrow_down_rounded
+                          : Icons.keyboard_arrow_up_rounded,
+                      size: 18,
+                      color: HermesTokens.textMuted,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          if (_terminalExpanded)
+            Expanded(
+              child: Container(
+                decoration: BoxDecoration(
+                  border: Border(
+                    top: BorderSide(color: HermesTokens.border),
+                  ),
+                ),
+                child: _activities.isEmpty
+                    ? Center(
+                        child: Text(
+                          'No tool executions recorded yet.',
+                          style: GoogleFonts.jetBrainsMono(
+                            fontSize: 11,
+                            color: HermesTokens.textMuted,
+                          ),
+                        ),
+                      )
+                    : ListView.separated(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 12,
+                          vertical: 8,
+                        ),
+                        itemCount: _activities.length,
+                        separatorBuilder: (_, _) =>
+                            Divider(height: 1, color: HermesTokens.border),
+                        itemBuilder: (context, idx) {
+                          final act = _activities[idx];
+                          final isExpanded = _expandedActivityIdx == idx;
+
+                          IconData actIcon = Icons.build_outlined;
+                          Color iconColor = HermesTokens.textSecondary;
+                          if (!act.isSuccess || act.type == 'error') {
+                            actIcon = Icons.error_outline_rounded;
+                            iconColor = HermesTokens.error;
+                          } else if (act.type == 'command') {
+                            actIcon = Icons.terminal_rounded;
+                            iconColor = HermesTokens.accentText;
+                          } else if (act.type == 'reasoning') {
+                            actIcon = Icons.psychology_outlined;
+                            iconColor = HermesTokens.textMuted;
+                          }
+
+                          return InkWell(
+                            onTap: () {
+                              setState(() {
+                                _expandedActivityIdx = isExpanded ? null : idx;
+                              });
+                            },
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 4,
+                                vertical: 8,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Icon(actIcon, size: 14, color: iconColor),
+                                      const SizedBox(width: 8),
+                                      Expanded(
+                                        child: Text(
+                                          act.title,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: GoogleFonts.jetBrainsMono(
+                                            fontSize: 11,
+                                            fontWeight: FontWeight.w600,
+                                            color: HermesTokens.textPrimary,
+                                          ),
+                                        ),
+                                      ),
+                                      if (act.detail != null &&
+                                          act.detail!.isNotEmpty) ...[
+                                        const SizedBox(width: 8),
+                                        ConstrainedBox(
+                                          constraints: const BoxConstraints(
+                                            maxWidth: 120,
+                                          ),
+                                          child: Text(
+                                            act.detail!,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: GoogleFonts.jetBrainsMono(
+                                              fontSize: 10,
+                                              color: HermesTokens.textMuted,
+                                            ),
+                                          ),
+                                        ),
+                                      ],
+                                      const SizedBox(width: 4),
+                                      Icon(
+                                        isExpanded
+                                            ? Icons.expand_less_rounded
+                                            : Icons.expand_more_rounded,
+                                        size: 15,
+                                        color: HermesTokens.textMuted,
+                                      ),
+                                    ],
+                                  ),
+                                  if (isExpanded &&
+                                      act.output != null &&
+                                      act.output!.trim().isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.all(10),
+                                      decoration: NeumorphicDecoration.recessed(
+                                        radius: 10,
+                                        color: HermesTokens.codeBg,
+                                      ),
+                                      child: SelectableText(
+                                        act.output!.length > 2000
+                                            ? '${act.output!.substring(0, 2000)}\n... (truncated)'
+                                            : act.output!,
+                                        style: GoogleFonts.jetBrainsMono(
+                                          fontSize: 10.5,
+                                          height: 1.45,
+                                          color: HermesTokens.textSecondary,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+            ),
+        ],
       ),
     );
   }

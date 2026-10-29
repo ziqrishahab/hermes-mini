@@ -1,4 +1,5 @@
 import "package:flutter/material.dart";
+import "dart:convert";
 import "package:flutter_riverpod/flutter_riverpod.dart";
 import "package:go_router/go_router.dart";
 import "../../providers/connection_provider.dart";
@@ -22,6 +23,8 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
   late bool _enabled;
   bool _saving = false;
   String? _errorMessage;
+  Map<String, dynamic>? _whatsappStatus;
+  bool _loadingWhatsAppStatus = false;
 
   final Map<String, TextEditingController> _controllers = {};
   final Map<String, bool> _obscureText = {};
@@ -37,19 +40,6 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
         return "WhatsApp Bridge";
       default:
         return "${widget.platformId[0].toUpperCase()}${widget.platformId.substring(1)} Gateway";
-    }
-  }
-
-  IconData get _platformIcon {
-    switch (widget.platformId.toLowerCase()) {
-      case "telegram":
-        return Icons.send_rounded;
-      case "discord":
-        return Icons.forum_rounded;
-      case "whatsapp":
-        return Icons.chat_bubble_outline_rounded;
-      default:
-        return Icons.cell_tower_rounded;
     }
   }
 
@@ -92,6 +82,10 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
   void initState() {
     super.initState();
     _enabled = widget.initialData?['enabled'] == true;
+
+    if (widget.platformId.toLowerCase() == 'whatsapp') {
+      _fetchWhatsAppStatus();
+    }
 
     final rawVars = widget.initialData?['env_vars'];
     if (rawVars is List && rawVars.isNotEmpty) {
@@ -226,6 +220,159 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
     }
   }
 
+  Future<void> _fetchWhatsAppStatus() async {
+    setState(() => _loadingWhatsAppStatus = true);
+    try {
+      final conn = ref.read(connectionProvider).valueOrNull;
+      if (conn != null) {
+        final st = await conn.getWhatsAppBridgeStatus();
+        if (mounted) {
+          setState(() {
+            _whatsappStatus = st;
+            _loadingWhatsAppStatus = false;
+          });
+        }
+      } else {
+        if (mounted) setState(() => _loadingWhatsAppStatus = false);
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingWhatsAppStatus = false);
+    }
+  }
+
+  Widget _buildWhatsAppQrSection() {
+    final status = _whatsappStatus;
+    final isPaired = status != null &&
+        (status['authenticated'] == true ||
+            status['connected'] == true ||
+            status['status'] == 'authenticated' ||
+            status['status'] == 'connected');
+    final rawQr = status?['qr'] ?? status?['qr_code'];
+    String? qrBase64;
+    if (rawQr is String && rawQr.isNotEmpty) {
+      if (rawQr.startsWith('data:image')) {
+        final commaIndex = rawQr.indexOf(',');
+        if (commaIndex != -1) {
+          qrBase64 = rawQr.substring(commaIndex + 1);
+        }
+      } else {
+        qrBase64 = rawQr;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 22),
+        _sectionLabel("WHATSAPP BRIDGE STATUS & PAIRING"),
+        const SizedBox(height: 8),
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(18),
+          decoration: NeumorphicDecoration.raised(radius: 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 10,
+                    height: 10,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isPaired ? const Color(0xFF10B981) : const Color(0xFFF59E0B),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      isPaired
+                          ? "Connected and Authenticated"
+                          : (_loadingWhatsAppStatus
+                              ? "Checking WhatsApp status..."
+                              : "Not Paired / Waiting for QR Scan"),
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: isPaired ? const Color(0xFF10B981) : HermesTokens.textPrimary,
+                      ),
+                    ),
+                  ),
+                  IconButton(
+                    icon: _loadingWhatsAppStatus
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Icon(Icons.refresh_rounded, size: 20, color: HermesTokens.accent),
+                    tooltip: "Refresh WhatsApp Status",
+                    onPressed: _loadingWhatsAppStatus ? null : _fetchWhatsAppStatus,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                isPaired
+                    ? "Your WhatsApp bridge daemon is linked and ready to route messages to and from Hermes."
+                    : "Scan the QR code below using WhatsApp on your phone (Linked Devices) to pair.",
+                style: TextStyle(fontSize: 12, color: HermesTokens.textMuted, height: 1.4),
+              ),
+              if (qrBase64 != null) ...[
+                const SizedBox(height: 16),
+                Center(
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(14),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.08),
+                          blurRadius: 10,
+                          offset: const Offset(0, 4),
+                        ),
+                      ],
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(8),
+                      child: Image.memory(
+                        base64Decode(qrBase64),
+                        width: 180,
+                        height: 180,
+                        fit: BoxFit.contain,
+                        errorBuilder: (context, error, stackTrace) => Container(
+                          width: 180,
+                          height: 180,
+                          alignment: Alignment.center,
+                          child: Text(
+                            "Invalid QR data",
+                            style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Center(
+                  child: Text(
+                    "Scan with WhatsApp > Linked Devices",
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: HermesTokens.textMuted,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -244,7 +391,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
               decoration: NeumorphicDecoration.raised(radius: 12, distance: 2.5, blur: 5),
               child: IconButton(
                 tooltip: "Back",
-                icon: const Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
+                icon: Icon(Icons.arrow_back_ios_new_rounded, color: HermesTokens.textPrimary, size: 16),
                 onPressed: () => context.pop(),
                 padding: EdgeInsets.zero,
               ),
@@ -253,7 +400,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
         ),
         title: Text(
           _platformName,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 18,
             fontWeight: FontWeight.w700,
             color: HermesTokens.textPrimary,
@@ -266,26 +413,19 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Hero Status Card
+              // Hero Status Card (Clean, minimalist typography without AI-slop icon tile)
               Container(
                 padding: const EdgeInsets.all(18),
                 decoration: NeumorphicDecoration.raised(radius: 18),
                 child: Row(
                   children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: NeumorphicDecoration.recessed(radius: 14),
-                      child: Icon(_platformIcon, color: HermesTokens.accent, size: 24),
-                    ),
-                    const SizedBox(width: 14),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             _platformName,
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 16,
                               fontWeight: FontWeight.w700,
                               color: HermesTokens.textPrimary,
@@ -294,11 +434,12 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                           const SizedBox(height: 3),
                           Text(
                             _platformSubtitle,
-                            style: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+                            style: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
                           ),
                         ],
                       ),
                     ),
+                    const SizedBox(width: 12),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                       decoration: NeumorphicDecoration.recessed(radius: 10),
@@ -327,7 +468,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Text(
+                          Text(
                             "Enable Gateway Bridge",
                             style: TextStyle(
                               fontSize: 13,
@@ -340,7 +481,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                             _enabled
                                 ? "Daemon will listen and respond on $_platformName"
                                 : "Messaging bridge is currently inactive",
-                            style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+                            style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
                           ),
                         ],
                       ),
@@ -357,6 +498,9 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                   ],
                 ),
               ),
+
+              if (widget.platformId.toLowerCase() == 'whatsapp')
+                _buildWhatsAppQrSection(),
 
               const SizedBox(height: 22),
 
@@ -393,12 +537,12 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                   children: [
                     Row(
                       children: [
-                        const Icon(Icons.info_outline_rounded, size: 16, color: HermesTokens.accent),
+                        Icon(Icons.info_outline_rounded, size: 16, color: HermesTokens.accent),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             "How to configure $_platformName",
-                            style: const TextStyle(
+                            style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w700,
                               color: HermesTokens.textPrimary,
@@ -410,7 +554,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                     const SizedBox(height: 10),
                     Text(
                       _setupGuide,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 11,
                         color: HermesTokens.textSecondary,
                         height: 1.5,
@@ -482,7 +626,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
         padding: const EdgeInsets.only(left: 2, bottom: 2),
         child: Text(
           t,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w600,
             color: HermesTokens.textMuted,
@@ -501,9 +645,29 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
     final controller = _controllers[key]!;
     final obscure = _obscureText[key] ?? false;
 
-    String hintText = "Enter $prompt";
+    String hintText = prompt;
+    TextInputType keyboardType = TextInputType.text;
+    final lowerKey = key.toLowerCase();
+    final lowerPrompt = prompt.toLowerCase();
+    if (lowerKey.contains('port') ||
+        lowerKey.contains('phone') ||
+        lowerKey.contains('number') ||
+        lowerKey.contains('timeout') ||
+        lowerPrompt.contains('port') ||
+        lowerPrompt.contains('number')) {
+      keyboardType = TextInputType.number;
+    } else if (isPassword) {
+      keyboardType = TextInputType.visiblePassword;
+    } else if (lowerKey.contains('url') ||
+        lowerKey.contains('webhook') ||
+        lowerKey.contains('endpoint') ||
+        lowerPrompt.contains('url')) {
+      keyboardType = TextInputType.url;
+    } else if (lowerKey.contains('email') || lowerPrompt.contains('email')) {
+      keyboardType = TextInputType.emailAddress;
+    }
     if (isSet) {
-      hintText = redacted != null ? "Set: $redacted" : "Configured (leave blank to keep)";
+      hintText = redacted != null ? "Set: $redacted" : "Configured";
     }
 
     return Column(
@@ -516,7 +680,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
           children: [
             Text(
               prompt,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.w700,
                 color: HermesTokens.textPrimary,
@@ -528,7 +692,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                 decoration: NeumorphicDecoration.recessed(radius: 6),
                 child: Text(
                   key,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontFamily: 'JetBrains Mono',
                     fontSize: 9,
                     color: HermesTokens.textMuted,
@@ -541,7 +705,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
           const SizedBox(height: 3),
           Text(
             description,
-            style: const TextStyle(fontSize: 11, color: HermesTokens.textMuted),
+            style: TextStyle(fontSize: 11, color: HermesTokens.textMuted),
           ),
         ],
         const SizedBox(height: 8),
@@ -551,15 +715,19 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
           child: TextField(
             controller: controller,
             obscureText: obscure,
-            style: const TextStyle(
+            keyboardType: keyboardType,
+            style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w500,
               color: HermesTokens.textPrimary,
             ),
             decoration: InputDecoration(
+              filled: false,
               border: InputBorder.none,
+              enabledBorder: InputBorder.none,
+              focusedBorder: InputBorder.none,
               hintText: hintText,
-              hintStyle: const TextStyle(fontSize: 12, color: HermesTokens.textMuted),
+              hintStyle: TextStyle(fontSize: 12, color: HermesTokens.textMuted),
               suffixIcon: isPassword
                   ? IconButton(
                       icon: Icon(
@@ -571,7 +739,7 @@ class _GatewayConfigScreenState extends ConsumerState<GatewayConfigScreen> {
                     )
                   : (controller.text.isNotEmpty
                       ? IconButton(
-                          icon: const Icon(Icons.clear_rounded, size: 16, color: HermesTokens.textMuted),
+                          icon: Icon(Icons.clear_rounded, size: 16, color: HermesTokens.textMuted),
                           onPressed: () => setState(() => controller.clear()),
                         )
                       : null),
